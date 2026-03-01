@@ -85,6 +85,11 @@ app.use((req, res, next) => {
 });
 
 // ── Health Check ────────────────────────────────────────────
+// ── Root ────────────────────────────────────────────────────
+app.get('/', (req, res) => {
+  res.json({ name: 'ZEN ASSETS API', status: 'running', docs: '/api/health' });
+});
+
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
