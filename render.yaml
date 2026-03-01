@@ -25,12 +25,8 @@ services:
       - key: FRONTEND_URL
         value: https://zen-assets.surge.sh
       - key: DB_PATH
-        value: /opt/render/project/src/data/zen_assets.db
+        value: ./data/zen_assets.db
       - key: LOGIN_RATE_LIMIT
         value: 10
       - key: LOGIN_RATE_WINDOW
         value: 15
-    disk:
-      name: zen-data
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1
