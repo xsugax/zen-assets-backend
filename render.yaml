@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: zen-assets-backend
+    runtime: node
+    region: oregon
+    plan: free
+    branch: master
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 4000
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      - key: ADMIN_EMAIL
+        value: admin@zenassets.com
+      - key: ADMIN_PASSWORD
+        value: ZenAdmin2026!
+      - key: ADMIN_NAME
+        value: ZEN Admin
+      - key: FRONTEND_URL
+        value: https://zen-assets.surge.sh
+      - key: DB_PATH
+        value: /opt/render/project/src/data/zen_assets.db
+      - key: LOGIN_RATE_LIMIT
+        value: 10
+      - key: LOGIN_RATE_WINDOW
+        value: 15
+    disk:
+      name: zen-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
