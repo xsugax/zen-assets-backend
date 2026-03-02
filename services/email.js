@@ -1,13 +1,36 @@
 /* ════════════════════════════════════════════════════════════
-   services/email.js — Transactional Email via Resend
+   services/email.js — Transactional Email
    ZEN ASSETS Backend
+
+   Driver priority:
+     1. Resend API  (set RESEND_API_KEY  → https://resend.com)
+     2. SMTP/Gmail  (set SMTP_HOST/USER/PASS — works free)
+     3. Console log (fallback — no config needed)
 ════════════════════════════════════════════════════════════ */
 
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 
-const resend = new Resend(process.env.RESEND_API_KEY);
-const FROM   = 'ZEN ASSETS <noreply@zenassets.com>';
-const BRAND  = '#00d4ff';
+const FROM_NAME  = 'ZEN ASSETS';
+const FROM_EMAIL = process.env.SMTP_FROM || process.env.SMTP_USER || 'noreply@zenassets.com';
+const BRAND      = '#00d4ff';
+
+// ── Build SMTP transporter (lazy, cached) ───────────────────
+let _transport = null;
+function getTransport() {
+  if (_transport) return _transport;
+  const host = process.env.SMTP_HOST;
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+  if (!host || !user || !pass) return null;
+  _transport = nodemailer.createTransport({
+    host,
+    port:   parseInt(process.env.SMTP_PORT || '465', 10),
+    secure: process.env.SMTP_SECURE !== 'false',
+    auth:   { user, pass },
+    tls:    { rejectUnauthorized: false },
+  });
+  return _transport;
+}
 
 // ── Shared HTML wrapper ─────────────────────────────────────
 function wrap(title, body) {
@@ -52,20 +75,37 @@ function wrap(title, body) {
 </html>`;
 }
 
-// ── Safe send wrapper ───────────────────────────────────────
+// ── Safe send wrapper — tries Resend → SMTP → console ──────
 async function send({ to, subject, html }) {
-  if (!process.env.RESEND_API_KEY || process.env.RESEND_API_KEY.startsWith('re_placeholder')) {
-    console.log(`[EMAIL SKIP] No API key — would send "${subject}" to ${to}`);
-    return { skipped: true };
+  // Path 1: Resend API
+  const resendKey = process.env.RESEND_API_KEY;
+  if (resendKey && !resendKey.startsWith('re_placeholder')) {
+    try {
+      const { Resend } = require('resend');
+      const resend = new Resend(resendKey);
+      await resend.emails.send({ from: `${FROM_NAME} <${FROM_EMAIL}>`, to, subject, html });
+      console.log(`[EMAIL/Resend] ✓ "${subject}" → ${to}`);
+      return { ok: true, driver: 'resend' };
+    } catch (err) {
+      console.error(`[EMAIL/Resend] ✗ "${subject}":`, err.message);
+    }
   }
-  try {
-    const result = await resend.emails.send({ from: FROM, to, subject, html });
-    console.log(`[EMAIL OK] "${subject}" → ${to}`);
-    return result;
-  } catch (err) {
-    console.error(`[EMAIL ERR] "${subject}" → ${to}:`, err.message);
-    return { error: err.message };
+
+  // Path 2: SMTP (Nodemailer / Gmail)
+  const transport = getTransport();
+  if (transport) {
+    try {
+      await transport.sendMail({ from: `"${FROM_NAME}" <${FROM_EMAIL}>`, to, subject, html });
+      console.log(`[EMAIL/SMTP] ✓ "${subject}" → ${to}`);
+      return { ok: true, driver: 'smtp' };
+    } catch (err) {
+      console.error(`[EMAIL/SMTP] ✗ "${subject}":`, err.message);
+    }
   }
+
+  // Path 3: Console fallback
+  console.log(`[EMAIL/LOG] "${subject}" → ${to}  (add RESEND_API_KEY or SMTP_* to enable real delivery)`);
+  return { ok: true, driver: 'log' };
 }
 
 // ═══════════════════════════════════════════════════════════

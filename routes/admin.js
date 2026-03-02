@@ -21,6 +21,7 @@ const express = require('express');
 const router  = express.Router();
 const db      = require('../db/database');
 const { authenticate, requireAdmin } = require('../middleware/auth');
+const email   = require('../services/email');
 
 // All admin routes require authentication + admin role
 router.use(authenticate, requireAdmin);
@@ -205,6 +206,10 @@ router.post('/withdrawals/:id/approve', (req, res) => {
       amount: tx.amount,
     }, 'warn', req.ip);
 
+    // Notify user
+    const user = db.users.findById(tx.user_id);
+    if (user) email.sendWithdrawalUpdate(user, Math.abs(tx.amount), 'completed').catch(() => {});
+
     res.json({ success: true, message: 'Withdrawal approved and processed' });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -227,6 +232,10 @@ router.post('/withdrawals/:id/reject', (req, res) => {
     amount: tx.amount,
     reason,
   }, 'warn', req.ip);
+
+  // Notify user
+  const rejUser = db.users.findById(tx.user_id);
+  if (rejUser) email.sendWithdrawalUpdate(rejUser, Math.abs(tx.amount), 'rejected', reason).catch(() => {});
 
   res.json({ success: true, message: 'Withdrawal rejected' });
 });

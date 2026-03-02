@@ -14,6 +14,7 @@ const bcrypt  = require('bcryptjs');
 const router  = express.Router();
 const db      = require('../db/database');
 const { authenticate, generateToken } = require('../middleware/auth');
+const email   = require('../services/email');
 
 // ── Register ────────────────────────────────────────────────
 router.post('/register', async (req, res) => {
@@ -62,6 +63,12 @@ router.post('/register', async (req, res) => {
 
     // Audit
     db.audit.log(userId, 'user.registered', { email, tier, depositAmount }, 'info', req.ip);
+
+    // Send welcome email (fire-and-forget)
+    email.sendWelcome({ email: email.toLowerCase(), full_name: fullName }).catch(() => {});
+    if (depositAmount > 0) {
+      email.sendDepositConfirm({ email: email.toLowerCase(), full_name: fullName }, depositAmount, 'Initial Deposit').catch(() => {});
+    }
 
     res.status(201).json({
       success: true,
