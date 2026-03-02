@@ -132,6 +132,24 @@ function createTables() {
       closed_at   TEXT
     );
 
+    -- KYC document submissions
+    CREATE TABLE IF NOT EXISTS kyc_documents (
+      id              TEXT PRIMARY KEY,
+      user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      doc_type        TEXT NOT NULL CHECK(doc_type IN ('passport','national_id','drivers_license','residence_permit')),
+      doc_front       TEXT NOT NULL,
+      doc_back        TEXT,
+      selfie          TEXT,
+      full_name       TEXT,
+      date_of_birth   TEXT,
+      country         TEXT,
+      status          TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','superseded')),
+      reviewer_id     TEXT REFERENCES users(id),
+      reviewer_notes  TEXT,
+      submitted_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      reviewed_at     TEXT
+    );
+
     -- Indexes for performance
     CREATE INDEX IF NOT EXISTS idx_users_email        ON users(email);
     CREATE INDEX IF NOT EXISTS idx_wallets_user       ON wallets(user_id);
@@ -141,6 +159,8 @@ function createTables() {
     CREATE INDEX IF NOT EXISTS idx_sessions_jti       ON sessions(token_jti);
     CREATE INDEX IF NOT EXISTS idx_trades_user        ON trades(user_id);
     CREATE INDEX IF NOT EXISTS idx_audit_user         ON audit_log(user_id);
+    CREATE INDEX IF NOT EXISTS idx_kyc_user           ON kyc_documents(user_id);
+    CREATE INDEX IF NOT EXISTS idx_kyc_status         ON kyc_documents(status);
   `);
 }
 

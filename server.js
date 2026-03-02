@@ -22,6 +22,9 @@ db.init();
 // Clean up expired sessions every hour
 setInterval(() => db.sessions.cleanup(), 60 * 60 * 1000);
 
+// ── Initialise Cron Jobs ────────────────────────────────────
+require('./services/cron').init();
+
 // ── Security Headers ────────────────────────────────────────
 app.use(helmet());
 
@@ -103,6 +106,12 @@ app.get('/api/health', (req, res) => {
 const authRoutes   = require('./routes/auth');
 const adminRoutes  = require('./routes/admin');
 const walletRoutes = require('./routes/wallet');
+const tradesRoutes = require('./routes/trades');
+const stripeRoutes = require('./routes/stripe');
+const kycRoutes    = require('./routes/kyc');
+
+// Stripe webhook must receive raw body — register BEFORE express.json parses it
+app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
 
 // Apply stricter rate limit to auth endpoints
 app.use('/api/auth/login', authLimiter);
@@ -111,6 +120,9 @@ app.use('/api/auth/register', authLimiter);
 app.use('/api/auth',   authRoutes);
 app.use('/api/admin',  adminRoutes);
 app.use('/api/wallet', walletRoutes);
+app.use('/api/trades', tradesRoutes);
+app.use('/api/stripe', stripeRoutes);
+app.use('/api/kyc',    kycRoutes);
 
 // ── 404 Handler ─────────────────────────────────────────────
 app.use('/api/*', (req, res) => {
