@@ -74,7 +74,8 @@ app.use((req, res, next) => {
 
 // ── CORS ────────────────────────────────────────────────────
 const allowedOrigins = [
-  process.env.FRONTEND_URL || 'https://zen-assets.surge.sh',
+  process.env.FRONTEND_URL || 'https://zenassets.tech',
+  'https://www.zenassets.tech',
   'http://localhost:3000',
   'http://localhost:5500',
   'http://127.0.0.1:5500',
