@@ -12,6 +12,7 @@ const cors       = require('cors');
 const helmet     = require('helmet');
 const rateLimit  = require('express-rate-limit');
 const db         = require('./db/database');
+const { securityMiddleware } = require('./middleware/security');
 
 const app  = express();
 const PORT = parseInt(process.env.PORT, 10) || 4000;
@@ -25,8 +26,51 @@ setInterval(() => db.sessions.cleanup(), 60 * 60 * 1000);
 // ── Initialise Cron Jobs ────────────────────────────────────
 require('./services/cron').init();
 
-// ── Security Headers ────────────────────────────────────────
-app.use(helmet());
+// ── Security Headers — Strict Mode ────────────────────────
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:', 'https:'],
+      connectSrc: ["'self'", 'https:', 'wss:'],
+      fontSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      upgradeInsecureRequests: [],
+    },
+  },
+  hsts: {
+    maxAge: parseInt(process.env.HSTS_MAX_AGE || 31536000, 10),
+    includeSubDomains: true,
+    preload: process.env.HSTS_PRELOAD === 'true',
+  },
+  frameguard: { action: 'deny' },
+  noSniff: true,
+  xssFilter: true,
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+}));
+
+// ── HTTPS Enforcement ───────────────────────────────────────
+if (process.env.ENFORCE_HTTPS === 'true' && process.env.NODE_ENV === 'production') {
+  app.use((req, res, next) => {
+    if (req.header('x-forwarded-proto') !== 'https' && !req.secure) {
+      return res.status(403).json({ error: 'HTTPS required' });
+    }
+    next();
+  });
+}
+
+// ── Add additional security headers ─────────────────────────
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  next();
+});
+
 
 // ── CORS ────────────────────────────────────────────────────
 const allowedOrigins = [
@@ -52,6 +96,9 @@ app.use(cors({
 // ── Body Parsing ────────────────────────────────────────────
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// ── Request Sanitization & Input Validation ────────────────
+app.use(securityMiddleware);
 
 // ── Trust Proxy (for Render / Railway behind reverse proxy) ─
 app.set('trust proxy', 1);

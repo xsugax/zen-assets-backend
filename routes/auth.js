@@ -16,6 +16,33 @@ const db      = require('../db/database');
 const { authenticate, generateToken } = require('../middleware/auth');
 const email   = require('../services/email');
 
+// ── Password Strength Validator ─────────────────────────────
+function validatePassword(pwd) {
+  const minLength = parseInt(process.env.MIN_PASSWORD_LENGTH || 12, 10);
+  const requireUpper = process.env.REQUIRE_UPPERCASE === 'true';
+  const requireLower = process.env.REQUIRE_LOWERCASE === 'true';
+  const requireNum = process.env.REQUIRE_NUMBERS === 'true';
+  const requireSpecial = process.env.REQUIRE_SPECIAL_CHARS === 'true';
+
+  if (pwd.length < minLength) {
+    return { ok: false, error: `Password must be at least ${minLength} characters` };
+  }
+  if (requireUpper && !/[A-Z]/.test(pwd)) {
+    return { ok: false, error: 'Password must contain uppercase letters (A-Z)' };
+  }
+  if (requireLower && !/[a-z]/.test(pwd)) {
+    return { ok: false, error: 'Password must contain lowercase letters (a-z)' };
+  }
+  if (requireNum && !/[0-9]/.test(pwd)) {
+    return { ok: false, error: 'Password must contain numbers (0-9)' };
+  }
+  if (requireSpecial && !/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(pwd)) {
+    return { ok: false, error: 'Password must contain special characters (!@#$%^&*)' };
+  }
+  return { ok: true };
+}
+
+
 // ── Register ────────────────────────────────────────────────
 router.post('/register', async (req, res) => {
   try {
@@ -25,9 +52,13 @@ router.post('/register', async (req, res) => {
     if (!email || !password || !fullName) {
       return res.status(400).json({ error: 'Email, password, and full name are required' });
     }
-    if (password.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+
+    // Strict password validation
+    const pwdCheck = validatePassword(password);
+    if (!pwdCheck.ok) {
+      return res.status(400).json({ error: pwdCheck.error });
     }
+
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ error: 'Invalid email format' });
     }
