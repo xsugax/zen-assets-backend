@@ -235,10 +235,62 @@ async function sendEarningsCredit(user, amount, type = 'daily', newBalance = nul
   });
 }
 
+// Email Verification OTP (sent on signup — user must verify before account activates)
+async function sendEmailVerification(user, code) {
+  return send({
+    to: user.email,
+    subject: `[${code}] ZEN ASSETS \u2014 Verify Your Email Address`,
+    html: wrap('Verify Your Email', `
+      <p>Hi <strong>${user.full_name || user.email}</strong>,</p>
+      <p>Thanks for joining ZEN ASSETS. Enter the code below to verify your email address and activate your account.</p>
+      <div style="text-align:center;margin:32px 0">
+        <div style="display:inline-block;background:#0f1729;border:2px solid ${BRAND};border-radius:16px;padding:28px 56px">
+          <div style="font-size:11px;color:#9ca3af;letter-spacing:3px;text-transform:uppercase;margin-bottom:12px">Email Verification Code</div>
+          <div style="font-size:48px;font-weight:800;letter-spacing:16px;color:${BRAND};font-family:'Courier New',monospace">${code}</div>
+        </div>
+      </div>
+      <div class="alert">
+        <div class="stat"><span class="label">Expires in</span><span class="value">15 minutes</span></div>
+        <div class="stat"><span class="label">One-time use</span><span class="value">Yes \u2014 do not share</span></div>
+        <div class="stat"><span class="label">Requested</span><span class="value">${new Date().toUTCString()}</span></div>
+      </div>
+      <p style="color:#9ca3af;font-size:13px;margin-top:20px">If you did not create a ZEN ASSETS account, you can safely ignore this email.</p>
+    `),
+  });
+}
+
+// Login OTP (sent on every sign-in attempt after password is validated)
+async function sendLoginOTP(user, code, ip = 'Unknown') {
+  return send({
+    to: user.email,
+    subject: `[${code}] ZEN ASSETS \u2014 Login Verification Code`,
+    html: wrap('Login Verification', `
+      <p>Hi <strong>${user.full_name || user.email}</strong>,</p>
+      <p>A sign-in attempt was detected on your account. Use the code below to complete authentication.</p>
+      <div style="text-align:center;margin:32px 0">
+        <div style="display:inline-block;background:#0f1729;border:2px solid #d4a574;border-radius:16px;padding:28px 56px">
+          <div style="font-size:11px;color:#9ca3af;letter-spacing:3px;text-transform:uppercase;margin-bottom:12px">Login Code</div>
+          <div style="font-size:48px;font-weight:800;letter-spacing:16px;color:#d4a574;font-family:'Courier New',monospace">${code}</div>
+        </div>
+      </div>
+      <div class="alert">
+        <div class="stat"><span class="label">Expires in</span><span class="value">10 minutes</span></div>
+        <div class="stat"><span class="label">IP Address</span><span class="value">${ip}</span></div>
+        <div class="stat"><span class="label">Time</span><span class="value">${new Date().toUTCString()}</span></div>
+      </div>
+      <div class="alert" style="border-left-color:#ef4444;margin-top:16px">
+        <p style="margin:0;color:#ef4444;font-weight:700;font-size:14px">⚠\ufe0f Wasn't you? Change your password immediately and contact support.</p>
+      </div>
+    `),
+  });
+}
+
 module.exports = {
   sendWelcome,
   sendDepositConfirm,
   sendWithdrawalUpdate,
   sendKYCUpdate,
   sendEarningsCredit,
+  sendEmailVerification,
+  sendLoginOTP,
 };

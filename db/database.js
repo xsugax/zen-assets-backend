@@ -27,6 +27,10 @@ function init() {
   db.pragma('busy_timeout = 5000');
 
   createTables();
+
+  // Idempotent column additions (safe to run on existing databases)
+  try { db.prepare('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0').run(); } catch {}
+
   seedAdmin();
 
   console.log('✅ Database ready:', dbPath);
@@ -161,7 +165,18 @@ function createTables() {
     CREATE INDEX IF NOT EXISTS idx_audit_user         ON audit_log(user_id);
     CREATE INDEX IF NOT EXISTS idx_kyc_user           ON kyc_documents(user_id);
     CREATE INDEX IF NOT EXISTS idx_kyc_status         ON kyc_documents(status);
-  `);
+    -- OTP codes — per-user, per-type isolated; never share codes between users
+    CREATE TABLE IF NOT EXISTS otp_codes (
+      id         TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      code       TEXT NOT NULL,
+      type       TEXT NOT NULL CHECK(type IN ('email_verify','login_otp','password_reset')),
+      expires_at TEXT NOT NULL,
+      used       INTEGER DEFAULT 0,
+      attempts   INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_otp_user ON otp_codes(user_id, type, used);  `);
 }
 
 // ── Seed Admin User ─────────────────────────────────────────
@@ -446,10 +461,60 @@ const trades = {
   },
 };
 
+// ── OTP Codes — per-user, per-type code storage ────────────
+const otpCodes = {
+  // Store a new code; invalidates any existing active code of the same type for this user
+  create(userId, code, type, expiresInMinutes = 10) {
+    const id = uuid();
+    const expiresAt = new Date(Date.now() + expiresInMinutes * 60 * 1000).toISOString();
+    db.prepare("UPDATE otp_codes SET used = 1 WHERE user_id = ? AND type = ? AND used = 0").run(userId, type);
+    db.prepare('INSERT INTO otp_codes (id, user_id, code, type, expires_at) VALUES (?, ?, ?, ?, ?)').run(id, userId, code, type, expiresAt);
+    return id;
+  },
+
+  // Verify a code; increments attempt counter; marks used on success or exhaustion
+  verify(userId, code, type) {
+    const row = db.prepare(
+      'SELECT * FROM otp_codes WHERE user_id = ? AND type = ? AND used = 0 ORDER BY created_at DESC LIMIT 1'
+    ).get(userId, type);
+    if (!row) return { ok: false, error: 'No verification code found. Request a new one.' };
+    if (new Date(row.expires_at) < new Date()) {
+      db.prepare('UPDATE otp_codes SET used = 1 WHERE id = ?').run(row.id);
+      return { ok: false, error: 'Code expired. Please request a new one.' };
+    }
+    if (row.attempts >= 5) {
+      db.prepare('UPDATE otp_codes SET used = 1 WHERE id = ?').run(row.id);
+      return { ok: false, error: 'Too many failed attempts. Please request a new code.' };
+    }
+    if (row.code !== String(code).trim()) {
+      db.prepare('UPDATE otp_codes SET attempts = attempts + 1 WHERE id = ?').run(row.id);
+      const left = 5 - (row.attempts + 1);
+      return { ok: false, error: `Incorrect code. ${left} attempt${left === 1 ? '' : 's'} remaining.` };
+    }
+    db.prepare('UPDATE otp_codes SET used = 1 WHERE id = ?').run(row.id);
+    return { ok: true };
+  },
+
+  // Rate-limit helper: was a code generated within the last 60 seconds?
+  recentlySent(userId, type) {
+    const row = db.prepare(
+      'SELECT created_at FROM otp_codes WHERE user_id = ? AND type = ? ORDER BY created_at DESC LIMIT 1'
+    ).get(userId, type);
+    if (!row) return false;
+    return (Date.now() - new Date(row.created_at).getTime()) < 60000;
+  },
+
+  // Periodic cleanup — called from server.js cron
+  cleanup() {
+    db.prepare("DELETE FROM otp_codes WHERE datetime(expires_at) < datetime('now') AND used = 0").run();
+    db.prepare("DELETE FROM otp_codes WHERE used = 1 AND datetime(created_at) < datetime('now', '-1 day')").run();
+  },
+};
+
 // ── Raw DB access ───────────────────────────────────────────
 function raw() { return db; }
 
 module.exports = {
   init, raw,
-  users, wallets, transactions, sessions, audit, trades,
+  users, wallets, transactions, sessions, audit, trades, otpCodes,
 };

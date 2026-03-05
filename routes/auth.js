@@ -9,21 +9,36 @@
    POST /api/auth/change-password — Change password
 ════════════════════════════════════════════════════════════ */
 
-const express = require('express');
-const bcrypt  = require('bcryptjs');
-const router  = express.Router();
-const db      = require('../db/database');
+const express    = require('express');
+const bcrypt     = require('bcryptjs');
+const router     = express.Router();
+const db         = require('../db/database');
 const { authenticate, generateToken } = require('../middleware/auth');
-const email   = require('../services/email');
+const email      = require('../services/email');
+const otpService = require('../services/otp');
 
 // ── Password Strength Validator ─────────────────────────────
 function validatePassword(pwd) {
-  // Simple, user-friendly validation
-  if (!pwd || pwd.length < 8) {
-    return { ok: false, error: 'Password must be at least 8 characters' };
+  const minLength = parseInt(process.env.MIN_PASSWORD_LENGTH || 12, 10);
+  const requireUpper = process.env.REQUIRE_UPPERCASE === 'true';
+  const requireLower = process.env.REQUIRE_LOWERCASE === 'true';
+  const requireNum = process.env.REQUIRE_NUMBERS === 'true';
+  const requireSpecial = process.env.REQUIRE_SPECIAL_CHARS === 'true';
+
+  if (pwd.length < minLength) {
+    return { ok: false, error: `Password must be at least ${minLength} characters` };
   }
-  if (pwd.length > 128) {
-    return { ok: false, error: 'Password must be less than 128 characters' };
+  if (requireUpper && !/[A-Z]/.test(pwd)) {
+    return { ok: false, error: 'Password must contain uppercase letters (A-Z)' };
+  }
+  if (requireLower && !/[a-z]/.test(pwd)) {
+    return { ok: false, error: 'Password must contain lowercase letters (a-z)' };
+  }
+  if (requireNum && !/[0-9]/.test(pwd)) {
+    return { ok: false, error: 'Password must contain numbers (0-9)' };
+  }
+  if (requireSpecial && !/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(pwd)) {
+    return { ok: false, error: 'Password must contain special characters (!@#$%^&*)' };
   }
   return { ok: true };
 }
@@ -36,104 +51,65 @@ router.post('/register', async (req, res) => {
 
     // Validation
     if (!email || !password || !fullName) {
-      return res.status(400).json({ ok: false, error: 'Email, password, and full name are required' });
+      return res.status(400).json({ error: 'Email, password, and full name are required' });
     }
 
-    const emailLower = email.toLowerCase().trim();
-    
-    // Email validation
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailLower)) {
-      return res.status(400).json({ ok: false, error: 'Invalid email format' });
-    }
-
-    // Password validation
+    // Strict password validation
     const pwdCheck = validatePassword(password);
     if (!pwdCheck.ok) {
-      return res.status(400).json({ ok: false, error: pwdCheck.error });
+      return res.status(400).json({ error: pwdCheck.error });
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
     }
 
     // Check duplicate
-    const existing = db.users.findByEmail(emailLower);
+    const existing = db.users.findByEmail(email);
     if (existing) {
-      return res.status(409).json({ ok: false, error: 'An account with this email already exists. Please login instead.' });
+      return res.status(409).json({ error: 'An account with this email already exists' });
     }
 
-    // Verify tier is valid
-    const validTiers = ['bronze', 'silver', 'gold', 'platinum', 'diamond'];
-    if (!validTiers.includes(tier)) {
-      return res.status(400).json({ ok: false, error: 'Invalid membership tier' });
-    }
-
-    // Verify deposit meets minimum for tier
-    const deposit = parseFloat(depositAmount) || 0;
-    const minDeposits = { bronze: 5000, silver: 25000, gold: 100000, platinum: 500000, diamond: 1000000 };
-    if (deposit < minDeposits[tier]) {
-      return res.status(400).json({ ok: false, error: `${tier.charAt(0).toUpperCase() + tier.slice(1)} tier requires minimum $${minDeposits[tier].toLocaleString()} deposit` });
-    }
-
-    // Hash password (cost factor 10 for speed)
-    const passwordHash = await bcrypt.hash(password, 10);
+    // Hash password with bcrypt (cost factor 12)
+    const passwordHash = await bcrypt.hash(password, 12);
 
     // Create user
-    let userId;
-    try {
-      userId = db.users.create({ email: emailLower, passwordHash, fullName, tier });
-    } catch (dbErr) {
-      console.error('DB Create User Error:', dbErr);
-      return res.status(500).json({ ok: false, error: 'Failed to create account. Please try again.' });
-    }
+    const userId = db.users.create({ email, passwordHash, fullName, tier });
 
     // Create wallet
-    try {
-      db.wallets.create(userId, deposit);
-    } catch (dbErr) {
-      console.error('DB Create Wallet Error:', dbErr);
-      // Don't fail - user is created, wallet might have issues
-    }
+    db.wallets.create(userId, depositAmount);
 
-    // Log transaction if deposit
-    if (deposit > 0) {
-      try {
-        db.transactions.create({
-          userId,
-          type: 'deposit',
-          amount: deposit,
-          status: 'completed',
-          method: 'initial_deposit',
-          balanceBefore: 0,
-          balanceAfter: deposit,
-          notes: 'Initial registration deposit',
-        });
-      } catch (e) {
-        console.error('Transaction Log Error:', e);
-      }
-    }
-
-    // Audit log (don't fail on audit)
-    try {
-      if (db.audit && db.audit.log) {
-        db.audit.log(userId, 'user.registered', { email: emailLower, tier, depositAmount: deposit }, 'info', req.ip);
-      }
-    } catch (e) {
-      console.error('Audit Error:', e);
-    }
-
-    // Send welcome email (fire-and-forget, don't block)
-    if (email && email.sendWelcome) {
-      email.sendWelcome({ email: emailLower, full_name: fullName }).catch(err => {
-        console.error('Email send error:', err.message);
+    // If there's an initial deposit, log the transaction
+    if (depositAmount > 0) {
+      db.transactions.create({
+        userId,
+        type: 'deposit',
+        amount: depositAmount,
+        status: 'completed',
+        method: 'initial_deposit',
+        balanceBefore: 0,
+        balanceAfter: depositAmount,
+        notes: 'Initial registration deposit',
       });
     }
 
+    // Audit
+    db.audit.log(userId, 'user.registered', { email, tier, depositAmount }, 'info', req.ip);
+
+    // Generate email verification OTP and send — account not active until verified
+    const verifyCode = otpService.generate();
+    db.otpCodes.create(userId, verifyCode, 'email_verify', 15);
+    email.sendEmailVerification({ email: email.toLowerCase(), full_name: fullName }, verifyCode).catch(() => {});
+
     res.status(201).json({
-      ok: true,
       success: true,
-      message: 'Account created successfully! You can now login.',
-      user: { id: userId, email: emailLower, fullName, tier },
+      requiresVerification: true,
+      userId,
+      message: 'Account created. Check your email for a 6-digit verification code.',
     });
   } catch (err) {
     console.error('Register error:', err);
-    res.status(500).json({ ok: false, error: 'Registration failed. Please try again or contact support.' });
+    res.status(500).json({ error: 'Registration failed. Please try again.' });
   }
 });
 
@@ -143,121 +119,46 @@ router.post('/login', async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({ ok: false, error: 'Email and password are required' });
+      return res.status(400).json({ error: 'Email and password are required' });
     }
-
-    const emailLower = email.toLowerCase().trim();
 
     // Find user
-    const user = db.users.findByEmail(emailLower);
+    const user = db.users.findByEmail(email);
     if (!user) {
-      // Don't reveal if email exists - generic error for security
-      return res.status(401).json({ ok: false, error: 'Invalid email or password' });
+      return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    // Check account status
+    // Check status
     if (user.status === 'suspended') {
-      return res.status(403).json({ ok: false, error: 'Account suspended. Please contact support.' });
+      return res.status(403).json({ error: 'Account suspended. Contact support.' });
     }
     if (user.status === 'banned') {
-      return res.status(403).json({ ok: false, error: 'Account is no longer active.' });
+      return res.status(403).json({ error: 'Account banned.' });
     }
 
     // Verify password
-    let passwordValid = false;
-    try {
-      passwordValid = await bcrypt.compare(password, user.password_hash);
-    } catch (bcryptErr) {
-      console.error('Bcrypt compare error:', bcryptErr);
-      return res.status(401).json({ ok: false, error: 'Invalid email or password' });
+    const valid = await bcrypt.compare(password, user.password_hash);
+    if (!valid) {
+      db.audit.log(user.id, 'auth.login_failed', { email }, 'warn', req.ip);
+      return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    if (!passwordValid) {
-      // Log failed attempt (don't block)
-      if (db.audit && db.audit.log) {
-        try {
-          db.audit.log(user.id, 'auth.login_failed', { email: emailLower, ip: req.ip }, 'warn', req.ip);
-        } catch (e) {
-          console.error('Audit error:', e);
-        }
-      }
-      return res.status(401).json({ ok: false, error: 'Invalid email or password' });
-    }
+    // Generate login OTP and send to registered email
+    const loginCode = otpService.generate();
+    db.otpCodes.create(user.id, loginCode, 'login_otp', 10);
+    email.sendLoginOTP({ email: user.email, full_name: user.full_name }, loginCode, req.ip).catch(() => {});
 
-    // Generate JWT
-    let token, jti, expiresAt;
-    try {
-      const tokenData = generateToken(user.id, user.role);
-      token = tokenData.token;
-      jti = tokenData.jti;
-      expiresAt = tokenData.expiresAt;
-    } catch (jwtErr) {
-      console.error('JWT generation error:', jwtErr);
-      return res.status(500).json({ ok: false, error: 'Login failed. Please try again.' });
-    }
-
-    // Create session (don't fail if this fails)
-    try {
-      db.sessions.create({
-        userId: user.id,
-        tokenJti: jti,
-        ipAddress: req.ip || 'unknown',
-        userAgent: req.headers['user-agent'] || 'unknown',
-        expiresAt,
-      });
-    } catch (sessErr) {
-      console.error('Session creation error:', sessErr);
-      // Continue anyway - token will still work
-    }
-
-    // Update login timestamp (don't fail if this fails)
-    try {
-      db.users.updateLogin(user.id);
-    } catch (updateErr) {
-      console.error('Update login error:', updateErr);
-    }
-
-    // Get wallet
-    let wallet = null;
-    try {
-      wallet = db.wallets.findByUser(user.id);
-    } catch (walletErr) {
-      console.error('Wallet error:', walletErr);
-    }
-
-    // Audit log (don't block)
-    if (db.audit && db.audit.log) {
-      try {
-        db.audit.log(user.id, 'auth.login', { ip: req.ip }, 'info', req.ip);
-      } catch (e) {
-        console.error('Audit error:', e);
-      }
-    }
+    db.audit.log(user.id, 'auth.login_otp_sent', { ip: req.ip }, 'info', req.ip);
 
     res.json({
-      ok: true,
       success: true,
-      token,
-      user: {
-        id: user.id,
-        email: user.email,
-        fullName: user.full_name,
-        role: user.role,
-        tier: user.tier,
-        status: user.status,
-        kycStatus: user.kyc_status,
-      },
-      wallet: wallet ? {
-        balance: wallet.balance,
-        initialDeposit: wallet.initial_deposit,
-        totalDeposited: wallet.total_deposited,
-        totalWithdrawn: wallet.total_withdrawn,
-        totalEarned: wallet.total_earned,
-      } : { balance: 0 },
+      requires_otp: true,
+      userId: user.id,
+      message: 'A 6-digit verification code has been sent to your email address.',
     });
   } catch (err) {
     console.error('Login error:', err);
-    res.status(500).json({ ok: false, error: 'Login failed. Please try again or contact support.' });
+    res.status(500).json({ error: 'Login failed. Please try again.' });
   }
 });
 
@@ -343,10 +244,119 @@ router.post('/change-password', authenticate, async (req, res) => {
 
     db.audit.log(req.user.id, 'auth.password_changed', null, 'info', req.ip);
 
-    res.json({ success: true, message: 'Password changed. All other sessions revoked.', token });
+  res.json({ success: true, message: 'Password changed. All other sessions revoked.', token });
   } catch (err) {
     console.error('Change password error:', err);
     res.status(500).json({ error: 'Failed to change password' });
+  }
+});
+
+// ── Verify Email OTP (after registration) ───────────────────────────
+router.post('/verify-email', async (req, res) => {
+  try {
+    const { userId, code } = req.body;
+    if (!userId || !code) return res.status(400).json({ error: 'userId and code are required' });
+
+    const check = db.otpCodes.verify(userId, String(code).trim(), 'email_verify');
+    if (!check.ok) return res.status(400).json({ error: check.error });
+
+    // Activate account
+    db.raw().prepare('UPDATE users SET email_verified = 1 WHERE id = ?').run(userId);
+
+    // Issue JWT and create session
+    const user = db.raw().prepare('SELECT * FROM users WHERE id = ?').get(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const { token, jti, expiresAt } = generateToken(user.id, user.role);
+    db.sessions.create({ userId: user.id, tokenJti: jti, ipAddress: req.ip, userAgent: req.headers['user-agent'] || '', expiresAt });
+    db.users.updateLogin(user.id);
+
+    const wallet = db.wallets.findByUser(user.id);
+    db.audit.log(user.id, 'auth.email_verified', null, 'info', req.ip);
+
+    // Send welcome email now that account is verified
+    email.sendWelcome(user).catch(() => {});
+    const depositAmount = wallet ? wallet.initial_deposit : 0;
+    if (depositAmount > 0) {
+      email.sendDepositConfirm(user, depositAmount, 'Initial Deposit').catch(() => {});
+    }
+
+    res.json({
+      success: true,
+      token,
+      user: { id: user.id, email: user.email, fullName: user.full_name, role: user.role, tier: user.tier, status: user.status, kycStatus: user.kyc_status },
+      wallet: wallet ? { balance: wallet.balance, initialDeposit: wallet.initial_deposit, totalDeposited: wallet.total_deposited, totalWithdrawn: wallet.total_withdrawn, totalEarned: wallet.total_earned } : null,
+    });
+  } catch (err) {
+    console.error('Verify email error:', err);
+    res.status(500).json({ error: 'Verification failed. Please try again.' });
+  }
+});
+
+// ── Verify Login OTP (after password validated) ─────────────────────
+router.post('/verify-login-otp', async (req, res) => {
+  try {
+    const { userId, code } = req.body;
+    if (!userId || !code) return res.status(400).json({ error: 'userId and code are required' });
+
+    const check = db.otpCodes.verify(userId, String(code).trim(), 'login_otp');
+    if (!check.ok) return res.status(400).json({ error: check.error });
+
+    const user = db.raw().prepare('SELECT * FROM users WHERE id = ?').get(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.status === 'suspended') return res.status(403).json({ error: 'Account suspended. Contact support.' });
+
+    const { token, jti, expiresAt } = generateToken(user.id, user.role);
+    db.sessions.create({ userId: user.id, tokenJti: jti, ipAddress: req.ip, userAgent: req.headers['user-agent'] || '', expiresAt });
+    db.users.updateLogin(user.id);
+
+    const wallet = db.wallets.findByUser(user.id);
+    db.audit.log(user.id, 'auth.login', { ip: req.ip }, 'info', req.ip);
+
+    res.json({
+      success: true,
+      token,
+      user: { id: user.id, email: user.email, fullName: user.full_name, role: user.role, tier: user.tier, status: user.status, kycStatus: user.kyc_status },
+      wallet: wallet ? { balance: wallet.balance, initialDeposit: wallet.initial_deposit, totalDeposited: wallet.total_deposited, totalWithdrawn: wallet.total_withdrawn, totalEarned: wallet.total_earned } : null,
+    });
+  } catch (err) {
+    console.error('Verify login OTP error:', err);
+    res.status(500).json({ error: 'Verification failed. Please try again.' });
+  }
+});
+
+// ── Resend OTP (rate-limited: one per 60 seconds) ────────────────────
+router.post('/resend-otp', async (req, res) => {
+  try {
+    const { userId, type } = req.body;
+    if (!userId || !type) return res.status(400).json({ error: 'userId and type are required' });
+    if (!['email_verify', 'login_otp', 'password_reset'].includes(type)) {
+      return res.status(400).json({ error: 'Invalid OTP type' });
+    }
+
+    // Rate limit: one resend per 60 seconds
+    if (db.otpCodes.recentlySent(userId, type)) {
+      return res.status(429).json({ error: 'Please wait 60 seconds before requesting a new code.' });
+    }
+
+    const user = db.raw().prepare('SELECT * FROM users WHERE id = ?').get(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const newCode = otpService.generate();
+    const ttl = type === 'email_verify' ? 15 : type === 'password_reset' ? 30 : 10;
+    db.otpCodes.create(userId, newCode, type, ttl);
+
+    if (type === 'email_verify') {
+      email.sendEmailVerification(user, newCode).catch(() => {});
+    } else if (type === 'login_otp') {
+      email.sendLoginOTP(user, newCode, req.ip).catch(() => {});
+    }
+
+    db.audit.log(userId, `auth.otp_resent.${type}`, null, 'info', req.ip);
+    res.json({ success: true, message: 'A new verification code has been sent to your email.' });
+  } catch (err) {
+    console.error('Resend OTP error:', err);
+    res.status(500).json({ error: 'Failed to resend code. Please try again.' });
   }
 });
 

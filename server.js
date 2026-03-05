@@ -20,8 +20,8 @@ const PORT = parseInt(process.env.PORT, 10) || 4000;
 // ── Initialise Database ─────────────────────────────────────
 db.init();
 
-// Clean up expired sessions every hour
-setInterval(() => db.sessions.cleanup(), 60 * 60 * 1000);
+// Clean up expired sessions and OTP codes every hour
+setInterval(() => { db.sessions.cleanup(); db.otpCodes.cleanup(); }, 60 * 60 * 1000);
 
 // ── Initialise Cron Jobs ────────────────────────────────────
 require('./services/cron').init();

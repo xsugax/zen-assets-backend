@@ -9,7 +9,7 @@
 
 const express = require('express');
 const router  = express.Router();
-const { authenticate } = require('../middleware/auth');
+const auth    = require('../middleware/auth');
 const db      = require('../db/database');
 const email   = require('../services/email');
 
@@ -32,7 +32,7 @@ router.get('/publishable-key', (req, res) => {
 });
 
 // ── POST /api/stripe/create-session ────────────────────────
-router.post('/create-session', authenticate, async (req, res) => {
+router.post('/create-session', auth, async (req, res) => {
   const stripe = getStripe();
   if (!stripe) {
     return res.status(503).json({ error: 'Stripe payments not configured. Please add API keys.' });

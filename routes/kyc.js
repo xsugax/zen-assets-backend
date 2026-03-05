@@ -11,12 +11,12 @@
 const express = require('express');
 const router  = express.Router();
 const { v4: uuid } = require('uuid');
-const { authenticate, requireAdmin } = require('../middleware/auth');
+const auth    = require('../middleware/auth');
 const db      = require('../db/database');
 const email   = require('../services/email');
 
 // ── POST /api/kyc/submit — upload KYC documents ────────────
-router.post('/submit', authenticate, (req, res) => {
+router.post('/submit', auth, (req, res) => {
   try {
     const userId = req.user.id;
     const user   = db.users.findById(userId);
@@ -70,7 +70,7 @@ router.post('/submit', authenticate, (req, res) => {
 });
 
 // ── GET /api/kyc/status — get current user's KYC status ────
-router.get('/status', authenticate, (req, res) => {
+router.get('/status', auth, (req, res) => {
   try {
     const user = db.users.findById(req.user.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
@@ -95,7 +95,7 @@ router.get('/status', authenticate, (req, res) => {
 });
 
 // ── GET /api/kyc/pending — admin: list pending submissions ─
-router.get('/pending', authenticate, requireAdmin, (req, res) => {
+router.get('/pending', auth, (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
 
   try {
@@ -118,7 +118,7 @@ router.get('/pending', authenticate, requireAdmin, (req, res) => {
 });
 
 // ── GET /api/kyc/:id — admin: get document details with images
-router.get('/:id', authenticate, (req, res) => {
+router.get('/:id', auth, (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
 
   try {
@@ -140,7 +140,7 @@ router.get('/:id', authenticate, (req, res) => {
 });
 
 // ── PATCH /api/kyc/:id/review — admin: approve or reject ───
-router.patch('/:id/review', authenticate, requireAdmin, (req, res) => {
+router.patch('/:id/review', auth, (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
 
   try {
