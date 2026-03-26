@@ -31,7 +31,7 @@ function isValidEmail(addr) {
 
 // ── Password Strength Validator ─────────────────────────────
 function validatePassword(pwd) {
-  const minLength = parseInt(process.env.MIN_PASSWORD_LENGTH || 12, 10);
+  const minLength = parseInt(process.env.MIN_PASSWORD_LENGTH || 6, 10);
   const requireUpper = process.env.REQUIRE_UPPERCASE === 'true';
   const requireLower = process.env.REQUIRE_LOWERCASE === 'true';
   const requireNum = process.env.REQUIRE_NUMBERS === 'true';
