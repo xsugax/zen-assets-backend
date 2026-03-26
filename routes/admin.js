@@ -5,8 +5,9 @@
    All routes require admin role.
 
    GET    /api/admin/users          — List users (paginated, searchable)
+   POST   /api/admin/users          — Create user (admin-created, skips OTP)
    GET    /api/admin/users/:id      — Get user details
-   PATCH  /api/admin/users/:id      — Update user (status, tier, KYC)
+   PATCH  /api/admin/users/:id      — Update user (status, tier, KYC, balance)
    DELETE /api/admin/users/:id      — Delete user
    POST   /api/admin/users/:id/credit   — Credit balance
    POST   /api/admin/users/:id/debit    — Debit balance
@@ -19,6 +20,7 @@
 
 const express = require('express');
 const router  = express.Router();
+const bcrypt  = require('bcryptjs');
 const db      = require('../db/database');
 const { authenticate, requireAdmin } = require('../middleware/auth');
 const email   = require('../services/email');
@@ -54,12 +56,68 @@ router.get('/users/:id', (req, res) => {
   });
 });
 
-// ── Update User (status, tier, KYC) ─────────────────────────
+// ── Admin Create User ───────────────────────────────────────
+router.post('/users', async (req, res) => {
+  try {
+    const { email: rawEmail, fullName, password, pin, tier = 'gold', depositAmount = 0 } = req.body;
+    if (!rawEmail || !fullName || !password) {
+      return res.status(400).json({ error: 'Email, full name, and password are required' });
+    }
+    const userEmail = rawEmail.toLowerCase().trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userEmail)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+    const existing = db.users.findByEmail(userEmail);
+    if (existing) {
+      return res.status(409).json({ error: 'An account with this email already exists' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 12);
+    const userId = db.users.create({ email: userEmail, passwordHash, fullName, tier });
+
+    // Set PIN if provided
+    if (pin && /^\d{4}$/.test(pin)) {
+      const pinHash = await bcrypt.hash(pin, 10);
+      db.users.setPin(userId, pinHash);
+    }
+
+    // Activate immediately (admin-created accounts skip email verification)
+    db.users.updateStatus(userId, 'active');
+
+    // Create wallet with initial deposit
+    const dep = parseFloat(depositAmount) || 0;
+    db.wallets.create(userId, dep);
+
+    if (dep > 0) {
+      db.transactions.create({
+        userId, type: 'admin_credit', amount: dep, status: 'completed',
+        method: 'admin', balanceBefore: 0, balanceAfter: dep,
+        notes: `Admin-created account funded by ${req.user.email}`,
+      });
+    }
+
+    db.audit.log(req.user.id, 'admin.user_created', {
+      targetUser: userId, email: userEmail, tier, depositAmount: dep,
+    }, 'info', req.ip);
+
+    const created = db.users.findById(userId);
+    const wallet = db.wallets.findByUser(userId);
+    res.status(201).json({ success: true, user: created, wallet });
+  } catch (err) {
+    console.error('Admin create user error:', err);
+    res.status(500).json({ error: 'Failed to create user' });
+  }
+});
+
+// ── Update User (status, tier, KYC, balance) ────────────────
 router.patch('/users/:id', (req, res) => {
   const user = db.users.findById(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  const { status, tier, kycStatus } = req.body;
+  const { status, tier, kycStatus, balance, depositAmount } = req.body;
   const changes = [];
 
   if (status && ['active', 'suspended', 'banned'].includes(status)) {
@@ -75,6 +133,23 @@ router.patch('/users/:id', (req, res) => {
     changes.push(`KYC → ${kycStatus}`);
   }
 
+  // Handle balance/deposit updates from admin funding
+  const fundAmount = parseFloat(balance) || parseFloat(depositAmount) || 0;
+  if (fundAmount > 0) {
+    try {
+      let wallet = db.wallets.findByUser(req.params.id);
+      if (!wallet) {
+        db.wallets.create(req.params.id, fundAmount);
+        changes.push(`wallet created: $${fundAmount}`);
+      } else if (wallet.balance !== fundAmount) {
+        db.wallets.setBalance(req.params.id, fundAmount);
+        changes.push(`balance → $${fundAmount}`);
+      }
+    } catch (e) {
+      console.warn('Wallet update:', e.message);
+    }
+  }
+
   if (changes.length > 0) {
     db.audit.log(req.user.id, 'admin.user_updated', {
       targetUser: req.params.id,
@@ -83,7 +158,8 @@ router.patch('/users/:id', (req, res) => {
   }
 
   const updated = db.users.findById(req.params.id);
-  res.json({ success: true, user: updated, changes });
+  const wallet = db.wallets.findByUser(req.params.id);
+  res.json({ success: true, user: updated, wallet, changes });
 });
 
 // ── Delete User ─────────────────────────────────────────────
@@ -278,6 +354,56 @@ router.get('/stats', (req, res) => {
       ...txStats,
     },
   });
+});
+
+// ── Admin Set/Reset User PIN ────────────────────────────────
+router.post('/users/:id/set-pin', async (req, res) => {
+  try {
+    const { pin } = req.body;
+    if (!pin || !/^\d{4}$/.test(pin)) return res.status(400).json({ error: 'PIN must be exactly 4 digits' });
+
+    const user = db.users.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const pinHash = await bcrypt.hash(pin, 10);
+    db.users.setPin(req.params.id, pinHash);
+
+    db.audit.log(req.user.id, 'admin.user_pin_set', {
+      targetUser: req.params.id,
+      email: user.email,
+    }, 'info', req.ip);
+
+    res.json({ success: true, message: `PIN set for ${user.email}` });
+  } catch (err) {
+    console.error('Admin set PIN error:', err);
+    res.status(500).json({ error: 'Failed to set PIN' });
+  }
+});
+
+// ── Admin Reset Password ────────────────────────────────────
+router.post('/users/:id/reset-password', async (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password || password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    const user = db.users.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const passwordHash = await bcrypt.hash(password, 12);
+    db.raw().prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, req.params.id);
+
+    db.audit.log(req.user.id, 'admin.user_password_reset', {
+      targetUser: req.params.id,
+      email: user.email,
+    }, 'warn', req.ip);
+
+    res.json({ success: true, message: `Password reset for ${user.email}` });
+  } catch (err) {
+    console.error('Admin password reset error:', err);
+    res.status(500).json({ error: 'Failed to reset password' });
+  }
 });
 
 // ── Audit Log ───────────────────────────────────────────────
