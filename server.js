@@ -74,19 +74,32 @@ app.use((req, res, next) => {
 
 // ── CORS ────────────────────────────────────────────────────
 const allowedOrigins = [
-  process.env.FRONTEND_URL || 'https://zenassets.tech',
+  'https://zenassets.tech',
   'https://www.zenassets.tech',
+  'http://zenassets.tech',
+  'http://www.zenassets.tech',
   'http://localhost:3000',
   'http://localhost:5500',
   'http://127.0.0.1:5500',
   'http://localhost:8080',
 ];
+if (process.env.FRONTEND_URL && !allowedOrigins.includes(process.env.FRONTEND_URL)) {
+  allowedOrigins.push(process.env.FRONTEND_URL);
+}
 
 app.use(cors({
   origin(origin, callback) {
     // Allow requests with no origin (mobile apps, curl, Postman)
     if (!origin) return callback(null, true);
+    // Exact match
     if (allowedOrigins.includes(origin)) return callback(null, true);
+    // Allow any *.zenassets.tech subdomain
+    if (/^https?:\/\/([a-z0-9-]+\.)*zenassets\.tech$/i.test(origin)) return callback(null, true);
+    // Allow Vercel preview deployments for zen-assets
+    if (/^https:\/\/zen-assets[a-z0-9-]*\.vercel\.app$/i.test(origin)) return callback(null, true);
+    // Allow GitHub Pages
+    if (/^https:\/\/[a-z0-9-]+\.github\.io$/i.test(origin)) return callback(null, true);
+    console.warn('CORS blocked origin:', origin);
     callback(new Error('CORS: Origin not allowed'));
   },
   credentials: true,
