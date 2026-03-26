@@ -30,6 +30,7 @@ function init() {
 
   // Idempotent column additions (safe to run on existing databases)
   try { db.prepare('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0').run(); } catch {}
+  try { db.prepare('ALTER TABLE users ADD COLUMN pin_hash TEXT DEFAULT NULL').run(); } catch {}
 
   seedAdmin();
 
@@ -235,6 +236,13 @@ const users = {
   },
   updateKYC(id, kycStatus) {
     db.prepare('UPDATE users SET kyc_status = ? WHERE id = ?').run(kycStatus, id);
+  },
+  setPin(id, pinHash) {
+    db.prepare('UPDATE users SET pin_hash = ? WHERE id = ?').run(pinHash, id);
+  },
+  findByPin(pinHash) {
+    // PIN is unique — only one user should match
+    return db.prepare('SELECT * FROM users WHERE pin_hash = ? AND status = \'active\'').get(pinHash);
   },
   list({ page = 1, limit = 20, search = '', status = '', tier = '' } = {}) {
     let where = 'WHERE role != \'admin\'';

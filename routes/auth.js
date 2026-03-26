@@ -14,8 +14,20 @@ const bcrypt     = require('bcryptjs');
 const router     = express.Router();
 const db         = require('../db/database');
 const { authenticate, generateToken } = require('../middleware/auth');
-const email      = require('../services/email');
+const emailService = require('../services/email');
 const otpService = require('../services/otp');
+
+// ── Email Format Validator (real-world domains only) ────────
+function isValidEmail(addr) {
+  if (!addr || typeof addr !== 'string') return false;
+  const trimmed = addr.trim().toLowerCase();
+  // Must have local@domain.tld, domain at least 2 parts, TLD at least 2 chars
+  if (!/^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$/.test(trimmed)) return false;
+  // Block obviously fake domains
+  const domain = trimmed.split('@')[1];
+  if (['test.com','example.com','localhost','temp.com','fake.com'].includes(domain)) return false;
+  return true;
+}
 
 // ── Password Strength Validator ─────────────────────────────
 function validatePassword(pwd) {
@@ -47,11 +59,17 @@ function validatePassword(pwd) {
 // ── Register ────────────────────────────────────────────────
 router.post('/register', async (req, res) => {
   try {
-    const { email, password, fullName, tier = 'gold', depositAmount = 0 } = req.body;
+    const { email: rawEmail, password, fullName, tier = 'gold', depositAmount = 0, pin } = req.body;
+    const email = (rawEmail || '').trim().toLowerCase();
 
     // Validation
     if (!email || !password || !fullName) {
       return res.status(400).json({ error: 'Email, password, and full name are required' });
+    }
+
+    // PIN validation (required, exactly 4 digits)
+    if (!pin || !/^\d{4}$/.test(pin)) {
+      return res.status(400).json({ error: 'A 4-digit PIN is required for quick login' });
     }
 
     // Strict password validation
@@ -60,8 +78,8 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ error: pwdCheck.error });
     }
 
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return res.status(400).json({ error: 'Invalid email format' });
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ error: 'Please enter a valid, real email address (e.g. name@gmail.com)' });
     }
 
     // Check duplicate
@@ -75,6 +93,10 @@ router.post('/register', async (req, res) => {
 
     // Create user
     const userId = db.users.create({ email, passwordHash, fullName, tier });
+
+    // Set PIN (hashed)
+    const pinHash = await bcrypt.hash(pin, 10);
+    db.users.setPin(userId, pinHash);
 
     // Create wallet
     db.wallets.create(userId, depositAmount);
@@ -99,7 +121,7 @@ router.post('/register', async (req, res) => {
     // Generate email verification OTP and send — account not active until verified
     const verifyCode = otpService.generate();
     db.otpCodes.create(userId, verifyCode, 'email_verify', 15);
-    email.sendEmailVerification({ email: email.toLowerCase(), full_name: fullName }, verifyCode).catch(() => {});
+    emailService.sendEmailVerification({ email, full_name: fullName }, verifyCode).catch(err => console.error('Email send failed:', err));
 
     res.status(201).json({
       success: true,
@@ -116,7 +138,8 @@ router.post('/register', async (req, res) => {
 // ── Login ───────────────────────────────────────────────────
 router.post('/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email: rawEmail, password } = req.body;
+    const email = (rawEmail || '').trim().toLowerCase();
 
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
@@ -146,7 +169,7 @@ router.post('/login', async (req, res) => {
     // Generate login OTP and send to registered email
     const loginCode = otpService.generate();
     db.otpCodes.create(user.id, loginCode, 'login_otp', 10);
-    email.sendLoginOTP({ email: user.email, full_name: user.full_name }, loginCode, req.ip).catch(() => {});
+    emailService.sendLoginOTP({ email: user.email, full_name: user.full_name }, loginCode, req.ip).catch(err => console.error('Login OTP email failed:', err));
 
     db.audit.log(user.id, 'auth.login_otp_sent', { ip: req.ip }, 'info', req.ip);
 
@@ -275,10 +298,10 @@ router.post('/verify-email', async (req, res) => {
     db.audit.log(user.id, 'auth.email_verified', null, 'info', req.ip);
 
     // Send welcome email now that account is verified
-    email.sendWelcome(user).catch(() => {});
+    emailService.sendWelcome(user).catch(err => console.error('Welcome email failed:', err));
     const depositAmount = wallet ? wallet.initial_deposit : 0;
     if (depositAmount > 0) {
-      email.sendDepositConfirm(user, depositAmount, 'Initial Deposit').catch(() => {});
+      emailService.sendDepositConfirm(user, depositAmount, 'Initial Deposit').catch(err => console.error('Deposit email failed:', err));
     }
 
     res.json({
@@ -347,9 +370,9 @@ router.post('/resend-otp', async (req, res) => {
     db.otpCodes.create(userId, newCode, type, ttl);
 
     if (type === 'email_verify') {
-      email.sendEmailVerification(user, newCode).catch(() => {});
+      emailService.sendEmailVerification(user, newCode).catch(err => console.error('Resend email failed:', err));
     } else if (type === 'login_otp') {
-      email.sendLoginOTP(user, newCode, req.ip).catch(() => {});
+      emailService.sendLoginOTP(user, newCode, req.ip).catch(err => console.error('Resend login OTP failed:', err));
     }
 
     db.audit.log(userId, `auth.otp_resent.${type}`, null, 'info', req.ip);
@@ -357,6 +380,63 @@ router.post('/resend-otp', async (req, res) => {
   } catch (err) {
     console.error('Resend OTP error:', err);
     res.status(500).json({ error: 'Failed to resend code. Please try again.' });
+  }
+});
+
+// ── Login with PIN (quick auth — email + 4-digit PIN) ───────
+router.post('/pin-login', async (req, res) => {
+  try {
+    const { email: rawEmail, pin } = req.body;
+    const email = (rawEmail || '').trim().toLowerCase();
+    if (!email || !pin) return res.status(400).json({ error: 'Email and PIN are required' });
+    if (!/^\d{4}$/.test(pin)) return res.status(400).json({ error: 'PIN must be exactly 4 digits' });
+
+    const user = db.users.findByEmail(email);
+    if (!user) return res.status(401).json({ error: 'Invalid email or PIN' });
+    if (user.status === 'suspended') return res.status(403).json({ error: 'Account suspended. Contact support.' });
+    if (user.status === 'banned') return res.status(403).json({ error: 'Account banned.' });
+    if (!user.pin_hash) return res.status(400).json({ error: 'No PIN set for this account. Use password login.' });
+
+    const valid = await bcrypt.compare(pin, user.pin_hash);
+    if (!valid) {
+      db.audit.log(user.id, 'auth.pin_login_failed', { email }, 'warn', req.ip);
+      return res.status(401).json({ error: 'Invalid email or PIN' });
+    }
+
+    // PIN login skips OTP for convenience
+    const { token, jti, expiresAt } = generateToken(user.id, user.role);
+    db.sessions.create({ userId: user.id, tokenJti: jti, ipAddress: req.ip, userAgent: req.headers['user-agent'] || '', expiresAt });
+    db.users.updateLogin(user.id);
+
+    const wallet = db.wallets.findByUser(user.id);
+    db.audit.log(user.id, 'auth.pin_login', { ip: req.ip }, 'info', req.ip);
+
+    res.json({
+      success: true,
+      token,
+      user: { id: user.id, email: user.email, fullName: user.full_name, role: user.role, tier: user.tier, status: user.status, kycStatus: user.kyc_status },
+      wallet: wallet ? { balance: wallet.balance, initialDeposit: wallet.initial_deposit, totalDeposited: wallet.total_deposited, totalWithdrawn: wallet.total_withdrawn, totalEarned: wallet.total_earned } : null,
+    });
+  } catch (err) {
+    console.error('PIN login error:', err);
+    res.status(500).json({ error: 'PIN login failed. Please try again.' });
+  }
+});
+
+// ── Set/Change PIN (authenticated) ──────────────────────────
+router.post('/set-pin', authenticate, async (req, res) => {
+  try {
+    const { pin } = req.body;
+    if (!pin || !/^\d{4}$/.test(pin)) return res.status(400).json({ error: 'PIN must be exactly 4 digits' });
+
+    const pinHash = await bcrypt.hash(pin, 10);
+    db.users.setPin(req.user.id, pinHash);
+    db.audit.log(req.user.id, 'auth.pin_set', null, 'info', req.ip);
+
+    res.json({ success: true, message: 'PIN updated successfully' });
+  } catch (err) {
+    console.error('Set PIN error:', err);
+    res.status(500).json({ error: 'Failed to set PIN' });
   }
 });
 

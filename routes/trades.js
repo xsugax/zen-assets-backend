@@ -11,11 +11,11 @@
 
 const express = require('express');
 const router  = express.Router();
-const auth    = require('../middleware/auth');
+const { authenticate } = require('../middleware/auth');
 const db      = require('../db/database');
 
 // ── POST /api/trades — save a trade ────────────────────────
-router.post('/', auth, (req, res) => {
+router.post('/', authenticate, (req, res) => {
   try {
     const {
       symbol, side, order_type, quantity,
@@ -94,7 +94,7 @@ router.post('/', auth, (req, res) => {
 });
 
 // ── GET /api/trades/stats — aggregated PnL stats ───────────
-router.get('/stats', auth, (req, res) => {
+router.get('/stats', authenticate, (req, res) => {
   try {
     const stats = db.trades.stats(req.user.id);
     const winRate = stats.total_trades > 0
@@ -108,7 +108,7 @@ router.get('/stats', auth, (req, res) => {
 });
 
 // ── GET /api/trades/open — open positions ──────────────────
-router.get('/open', auth, (req, res) => {
+router.get('/open', authenticate, (req, res) => {
   try {
     const positions = db.trades.openPositions(req.user.id);
     res.json({ positions });
@@ -119,7 +119,7 @@ router.get('/open', auth, (req, res) => {
 });
 
 // ── GET /api/trades — paginated trade list ─────────────────
-router.get('/', auth, (req, res) => {
+router.get('/', authenticate, (req, res) => {
   try {
     const page   = parseInt(req.query.page, 10)  || 1;
     const limit  = parseInt(req.query.limit, 10) || 20;
@@ -133,7 +133,7 @@ router.get('/', auth, (req, res) => {
 });
 
 // ── PATCH /api/trades/:id/close — close open trade ─────────
-router.patch('/:id/close', auth, (req, res) => {
+router.patch('/:id/close', authenticate, (req, res) => {
   try {
     const trade = db.raw().prepare(
       'SELECT * FROM trades WHERE id = ? AND user_id = ?'

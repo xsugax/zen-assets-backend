@@ -1,20 +1,20 @@
-/* ════════════════════════════════════════════════════════════
-   services/email.js — Transactional Email
+﻿/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+   services/email.js â€” Transactional Email
    ZEN ASSETS Backend
 
    Driver priority:
-     1. Resend API  (set RESEND_API_KEY  → https://resend.com)
-     2. SMTP/Gmail  (set SMTP_HOST/USER/PASS — works free)
-     3. Console log (fallback — no config needed)
-════════════════════════════════════════════════════════════ */
+     1. Resend API  (set RESEND_API_KEY  â†’ https://resend.com)
+     2. SMTP/Gmail  (set SMTP_HOST/USER/PASS â€” works free)
+     3. Console log (fallback â€” no config needed)
+â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 const nodemailer = require('nodemailer');
 
 const FROM_NAME  = 'ZEN ASSETS';
-const FROM_EMAIL = process.env.SMTP_FROM || process.env.SMTP_USER || 'noreply@zenassets.com';
-const BRAND      = '#00d4ff';
+const FROM_EMAIL = process.env.EMAIL_FROM_ADDR || process.env.SMTP_FROM || process.env.SMTP_USER || 'no-reply@zenassets.tech';
+const BRAND      = '#d4a574';
 
-// ── Build SMTP transporter (lazy, cached) ───────────────────
+// â”€â”€ Build SMTP transporter (lazy, cached) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 let _transport = null;
 function getTransport() {
   if (_transport) return _transport;
@@ -32,7 +32,7 @@ function getTransport() {
   return _transport;
 }
 
-// ── Shared HTML wrapper ─────────────────────────────────────
+// â”€â”€ Shared HTML wrapper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function wrap(title, body) {
   return `<!DOCTYPE html>
 <html>
@@ -68,14 +68,14 @@ function wrap(title, body) {
   <div class="body">${body}</div>
   <div class="footer">
     &copy; ${new Date().getFullYear()} ZEN ASSETS &mdash; This is an automated message, please do not reply.<br>
-    <a href="https://zen-assets.surge.sh" style="color:${BRAND};text-decoration:none">zen-assets.surge.sh</a>
+    <a href="https://zenassets.tech" style="color:${BRAND};text-decoration:none">zenassets.tech</a>
   </div>
 </div>
 </body>
 </html>`;
 }
 
-// ── Safe send wrapper — tries Resend → SMTP → console ──────
+// â”€â”€ Safe send wrapper â€” tries Resend â†’ SMTP â†’ console â”€â”€â”€â”€â”€â”€
 async function send({ to, subject, html }) {
   // Path 1: Resend API
   const resendKey = process.env.RESEND_API_KEY;
@@ -84,10 +84,10 @@ async function send({ to, subject, html }) {
       const { Resend } = require('resend');
       const resend = new Resend(resendKey);
       await resend.emails.send({ from: `${FROM_NAME} <${FROM_EMAIL}>`, to, subject, html });
-      console.log(`[EMAIL/Resend] ✓ "${subject}" → ${to}`);
+      console.log(`[EMAIL/Resend] âœ“ "${subject}" â†’ ${to}`);
       return { ok: true, driver: 'resend' };
     } catch (err) {
-      console.error(`[EMAIL/Resend] ✗ "${subject}":`, err.message);
+      console.error(`[EMAIL/Resend] âœ— "${subject}":`, err.message);
     }
   }
 
@@ -96,27 +96,27 @@ async function send({ to, subject, html }) {
   if (transport) {
     try {
       await transport.sendMail({ from: `"${FROM_NAME}" <${FROM_EMAIL}>`, to, subject, html });
-      console.log(`[EMAIL/SMTP] ✓ "${subject}" → ${to}`);
+      console.log(`[EMAIL/SMTP] âœ“ "${subject}" â†’ ${to}`);
       return { ok: true, driver: 'smtp' };
     } catch (err) {
-      console.error(`[EMAIL/SMTP] ✗ "${subject}":`, err.message);
+      console.error(`[EMAIL/SMTP] âœ— "${subject}":`, err.message);
     }
   }
 
   // Path 3: Console fallback
-  console.log(`[EMAIL/LOG] "${subject}" → ${to}  (add RESEND_API_KEY or SMTP_* to enable real delivery)`);
+  console.log(`[EMAIL/LOG] "${subject}" â†’ ${to}  (add RESEND_API_KEY or SMTP_* to enable real delivery)`);
   return { ok: true, driver: 'log' };
 }
 
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //  EMAIL TEMPLATES
-// ═══════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 // Welcome email after registration
 async function sendWelcome(user) {
   return send({
     to: user.email,
-    subject: 'Welcome to ZEN ASSETS — Your AI Trading Journey Begins',
+    subject: 'Welcome to ZEN ASSETS â€” Your AI Trading Journey Begins',
     html: wrap('Welcome to ZEN ASSETS', `
       <p>Hi <strong>${user.full_name || user.email}</strong>,</p>
       <div class="alert">
@@ -125,13 +125,13 @@ async function sendWelcome(user) {
       </div>
       <p>Here's what you can do next:</p>
       <ul style="line-height:1.8;color:#9ca3af">
-        <li>💰 <strong style="color:#fff">Fund your account</strong> — Make your first deposit to start trading</li>
-        <li>🤖 <strong style="color:#fff">AI Auto-Trader</strong> — Let our AI manage trades on your behalf</li>
-        <li>📊 <strong style="color:#fff">Live Charts</strong> — Real-time crypto & stock market data</li>
-        <li>🛡️ <strong style="color:#fff">Complete KYC</strong> — Verify your identity to unlock full features</li>
+        <li>ðŸ’° <strong style="color:#fff">Fund your account</strong> â€” Make your first deposit to start trading</li>
+        <li>ðŸ¤– <strong style="color:#fff">AI Auto-Trader</strong> â€” Let our AI manage trades on your behalf</li>
+        <li>ðŸ“Š <strong style="color:#fff">Live Charts</strong> â€” Real-time crypto & stock market data</li>
+        <li>ðŸ›¡ï¸ <strong style="color:#fff">Complete KYC</strong> â€” Verify your identity to unlock full features</li>
       </ul>
       <div style="text-align:center">
-        <a href="https://zen-assets.surge.sh" class="btn">Open Dashboard →</a>
+        <a href="https://zenassets.tech" class="btn">Open Dashboard â†’</a>
       </div>
     `),
   });
@@ -141,7 +141,7 @@ async function sendWelcome(user) {
 async function sendDepositConfirm(user, amount, method = 'Card') {
   return send({
     to: user.email,
-    subject: `Deposit Confirmed — $${amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+    subject: `Deposit Confirmed â€” $${amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
     html: wrap('Deposit Confirmed', `
       <p>Hi <strong>${user.full_name || user.email}</strong>,</p>
       <p>Your deposit has been processed and added to your trading wallet.</p>
@@ -152,7 +152,7 @@ async function sendDepositConfirm(user, amount, method = 'Card') {
         <div class="stat"><span class="label">Date</span><span class="value">${new Date().toUTCString()}</span></div>
       </div>
       <div style="text-align:center">
-        <a href="https://zen-assets.surge.sh" class="btn">View Wallet →</a>
+        <a href="https://zenassets.tech" class="btn">View Wallet â†’</a>
       </div>
     `),
   });
@@ -168,7 +168,7 @@ async function sendWithdrawalUpdate(user, amount, status, notes = '') {
   const info = statusMap[status] || statusMap.processing;
   return send({
     to: user.email,
-    subject: `Withdrawal ${info.label} — $${Number(amount).toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+    subject: `Withdrawal ${info.label} â€” $${Number(amount).toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
     html: wrap(`Withdrawal ${info.label}`, `
       <p>Hi <strong>${user.full_name || user.email}</strong>,</p>
       <p>${info.msg}</p>
@@ -181,7 +181,7 @@ async function sendWithdrawalUpdate(user, amount, status, notes = '') {
         ${notes ? `<div class="stat"><span class="label">Note</span><span class="value">${notes}</span></div>` : ''}
       </div>
       <div style="text-align:center">
-        <a href="https://zen-assets.surge.sh" class="btn">View Account →</a>
+        <a href="https://zenassets.tech" class="btn">View Account â†’</a>
       </div>
     `),
   });
@@ -190,7 +190,7 @@ async function sendWithdrawalUpdate(user, amount, status, notes = '') {
 // KYC status update
 async function sendKYCUpdate(user, status) {
   const statusMap = {
-    verified: { label: 'Verified ✓', color: '#10b981', msg: 'Congratulations! Your identity has been verified. You now have full access to all platform features including higher withdrawal limits.' },
+    verified: { label: 'Verified âœ“', color: '#10b981', msg: 'Congratulations! Your identity has been verified. You now have full access to all platform features including higher withdrawal limits.' },
     rejected: { label: 'Rejected', color: '#ef4444', msg: 'Unfortunately your KYC documents could not be verified. Please resubmit with clear, valid government-issued ID documents.' },
     submitted:{ label: 'Under Review', color: '#f59e0b', msg: 'Your KYC documents have been received and are currently under review. This typically takes 1-2 business days.' },
   };
@@ -205,7 +205,7 @@ async function sendKYCUpdate(user, status) {
         <p style="margin:8px 0 0">${info.msg}</p>
       </div>
       <div style="text-align:center">
-        <a href="https://zen-assets.surge.sh" class="btn">View Account →</a>
+        <a href="https://zenassets.tech" class="btn">View Account â†’</a>
       </div>
     `),
   });
@@ -216,7 +216,7 @@ async function sendEarningsCredit(user, amount, type = 'daily', newBalance = nul
   const label = type === 'weekly' ? 'Weekly Bonus' : 'Daily Earnings';
   return send({
     to: user.email,
-    subject: `${label} Credited — $${Number(amount).toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+    subject: `${label} Credited â€” $${Number(amount).toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
     html: wrap(`${label} Credited`, `
       <p>Hi <strong>${user.full_name || user.email}</strong>,</p>
       <p>Your ${type} earnings have been automatically applied to your trading wallet.</p>
@@ -229,13 +229,13 @@ async function sendEarningsCredit(user, amount, type = 'daily', newBalance = nul
       </div>
       <p style="color:#9ca3af;font-size:13px">Earnings are calculated based on your account tier and current balance. Log in to view your full earnings history.</p>
       <div style="text-align:center">
-        <a href="https://zen-assets.surge.sh" class="btn">View Wallet →</a>
+        <a href="https://zenassets.tech" class="btn">View Wallet â†’</a>
       </div>
     `),
   });
 }
 
-// Email Verification OTP (sent on signup — user must verify before account activates)
+// Email Verification OTP (sent on signup â€” user must verify before account activates)
 async function sendEmailVerification(user, code) {
   return send({
     to: user.email,
@@ -279,7 +279,7 @@ async function sendLoginOTP(user, code, ip = 'Unknown') {
         <div class="stat"><span class="label">Time</span><span class="value">${new Date().toUTCString()}</span></div>
       </div>
       <div class="alert" style="border-left-color:#ef4444;margin-top:16px">
-        <p style="margin:0;color:#ef4444;font-weight:700;font-size:14px">⚠\ufe0f Wasn't you? Change your password immediately and contact support.</p>
+        <p style="margin:0;color:#ef4444;font-weight:700;font-size:14px">âš \ufe0f Wasn't you? Change your password immediately and contact support.</p>
       </div>
     `),
   });
