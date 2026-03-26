@@ -118,16 +118,20 @@ router.post('/register', async (req, res) => {
     // Audit
     db.audit.log(userId, 'user.registered', { email, tier, depositAmount }, 'info', req.ip);
 
-    // Generate email verification OTP and send — account not active until verified
-    const verifyCode = otpService.generate();
-    db.otpCodes.create(userId, verifyCode, 'email_verify', 15);
-    emailService.sendEmailVerification({ email, full_name: fullName }, verifyCode).catch(err => console.error('Email send failed:', err));
+    // Activate account immediately (no OTP verification)
+    db.raw().prepare("UPDATE users SET status = 'active', email_verified = 1 WHERE id = ?").run(userId);
+
+    // Generate JWT so user is logged in right away
+    const { token, jti, expiresAt } = generateToken(userId, 'user');
+    db.sessions.create({ userId, tokenJti: jti, ipAddress: req.ip, userAgent: req.headers['user-agent'] || '', expiresAt });
+
+    const wallet = db.wallets.findByUser(userId);
 
     res.status(201).json({
       success: true,
-      requiresVerification: true,
-      userId,
-      message: 'Account created. Check your email for a 6-digit verification code.',
+      token,
+      user: { id: userId, email, fullName, role: 'user', tier, status: 'active', kycStatus: 'none' },
+      wallet: wallet ? { balance: wallet.balance, initialDeposit: wallet.initial_deposit, totalDeposited: wallet.total_deposited, totalWithdrawn: wallet.total_withdrawn, totalEarned: wallet.total_earned } : null,
     });
   } catch (err) {
     console.error('Register error:', err);
@@ -166,18 +170,19 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    // Generate login OTP and send to registered email
-    const loginCode = otpService.generate();
-    db.otpCodes.create(user.id, loginCode, 'login_otp', 10);
-    emailService.sendLoginOTP({ email: user.email, full_name: user.full_name }, loginCode, req.ip).catch(err => console.error('Login OTP email failed:', err));
+    // Direct login — generate JWT (no OTP)
+    const { token, jti, expiresAt } = generateToken(user.id, user.role);
+    db.sessions.create({ userId: user.id, tokenJti: jti, ipAddress: req.ip, userAgent: req.headers['user-agent'] || '', expiresAt });
+    db.users.updateLogin(user.id);
 
-    db.audit.log(user.id, 'auth.login_otp_sent', { ip: req.ip }, 'info', req.ip);
+    const wallet = db.wallets.findByUser(user.id);
+    db.audit.log(user.id, 'auth.login', { ip: req.ip }, 'info', req.ip);
 
     res.json({
       success: true,
-      requires_otp: true,
-      userId: user.id,
-      message: 'A 6-digit verification code has been sent to your email address.',
+      token,
+      user: { id: user.id, email: user.email, fullName: user.full_name, role: user.role, tier: user.tier, status: user.status, kycStatus: user.kyc_status },
+      wallet: wallet ? { balance: wallet.balance, initialDeposit: wallet.initial_deposit, totalDeposited: wallet.total_deposited, totalWithdrawn: wallet.total_withdrawn, totalEarned: wallet.total_earned } : null,
     });
   } catch (err) {
     console.error('Login error:', err);
