@@ -50,10 +50,11 @@ function createTables() {
     CREATE TABLE IF NOT EXISTS sessions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT NOT NULL,
-      token TEXT UNIQUE NOT NULL,
+      token_jti TEXT UNIQUE NOT NULL,
       ip_address TEXT,
       user_agent TEXT,
       expires_at DATETIME NOT NULL,
+      revoked INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )
@@ -79,6 +80,12 @@ function createTables() {
       id TEXT PRIMARY KEY,
       user_id TEXT UNIQUE NOT NULL,
       balance REAL DEFAULT 0.0,
+      initial_deposit REAL DEFAULT 0,
+      total_deposited REAL DEFAULT 0,
+      total_withdrawn REAL DEFAULT 0,
+      total_earned REAL DEFAULT 0,
+      total_claimed REAL DEFAULT 0,
+      pending_earnings REAL DEFAULT 0,
       currency TEXT DEFAULT 'USD',
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -95,7 +102,7 @@ function createTables() {
       amount REAL NOT NULL,
       balance_before REAL NOT NULL,
       balance_after REAL NOT NULL,
-      description TEXT,
+      notes TEXT,
       reference_id TEXT,
       status TEXT DEFAULT 'completed',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -110,7 +117,7 @@ function createTables() {
       user_id TEXT,
       action TEXT NOT NULL,
       details TEXT,
-      level TEXT DEFAULT 'info',
+      severity TEXT DEFAULT 'info',
       ip_address TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
