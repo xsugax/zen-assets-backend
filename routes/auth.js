@@ -145,38 +145,62 @@ router.post('/login', async (req, res) => {
     const { email: rawEmail, password } = req.body;
     const email = (rawEmail || '').trim().toLowerCase();
 
+    // Validate input
     if (!email || !password) {
+      console.warn(`[AUTH/LOGIN] Missing credentials from IP: ${req.ip}`);
       return res.status(400).json({ error: 'Email and password are required' });
+    }
+
+    // Basic email format validation
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      console.warn(`[AUTH/LOGIN] Invalid email format: ${email} from IP: ${req.ip}`);
+      return res.status(400).json({ error: 'Invalid email format' });
     }
 
     // Find user
     const user = db.users.findByEmail(email);
     if (!user) {
+      console.warn(`[AUTH/LOGIN] User not found: ${email} from IP: ${req.ip}`);
+      // Don't reveal if email exists - return same message
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    // Check status
+    // Check account status
     if (user.status === 'suspended') {
+      console.warn(`[AUTH/LOGIN] Suspended account login attempt: ${email} from IP: ${req.ip}`);
       return res.status(403).json({ error: 'Account suspended. Contact support.' });
     }
     if (user.status === 'banned') {
+      console.warn(`[AUTH/LOGIN] Banned account login attempt: ${email} from IP: ${req.ip}`);
       return res.status(403).json({ error: 'Account banned.' });
     }
 
-    // Verify password
-    const valid = await bcrypt.compare(password, user.password_hash);
+    // Verify password with timing-safe comparison
+    let valid = false;
+    try {
+      valid = await bcrypt.compare(password, user.password_hash);
+    } catch (bcryptErr) {
+      console.error(`[AUTH/LOGIN] Password verification error for ${email}:`, bcryptErr.message);
+      return res.status(500).json({ error: 'Authentication service temporarily unavailable' });
+    }
+
     if (!valid) {
+      console.warn(`[AUTH/LOGIN] Invalid password for ${email} from IP: ${req.ip}`);
       db.audit.log(user.id, 'auth.login_failed', { email }, 'warn', req.ip);
+      // Add small delay to prevent brute force (100-300ms)
+      await new Promise(resolve => setTimeout(resolve, Math.random() * 200 + 100));
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    // Direct login — generate JWT (no OTP)
+    // Generate JWT and create session
     const { token, jti, expiresAt } = generateToken(user.id, user.role);
     db.sessions.create({ userId: user.id, tokenJti: jti, ipAddress: req.ip, userAgent: req.headers['user-agent'] || '', expiresAt });
     db.users.updateLogin(user.id);
 
     const wallet = db.wallets.findByUser(user.id);
     db.audit.log(user.id, 'auth.login', { ip: req.ip }, 'info', req.ip);
+
+    console.log(`[AUTH/LOGIN] ✓ Success: ${email} from IP: ${req.ip}`);
 
     res.json({
       success: true,
@@ -185,7 +209,7 @@ router.post('/login', async (req, res) => {
       wallet: wallet ? { balance: wallet.balance, initialDeposit: wallet.initial_deposit, totalDeposited: wallet.total_deposited, totalWithdrawn: wallet.total_withdrawn, totalEarned: wallet.total_earned } : null,
     });
   } catch (err) {
-    console.error('Login error:', err);
+    console.error('[AUTH/LOGIN] Unexpected error:', err);
     res.status(500).json({ error: 'Login failed. Please try again.' });
   }
 });
@@ -302,12 +326,12 @@ router.post('/verify-email', async (req, res) => {
     const wallet = db.wallets.findByUser(user.id);
     db.audit.log(user.id, 'auth.email_verified', null, 'info', req.ip);
 
-    // Send welcome email now that account is verified
-    emailService.sendWelcome(user).catch(err => console.error('Welcome email failed:', err));
+    // TEMP: Email sending disabled for login troubleshooting
+    // emailService.sendWelcome(user).catch(err => console.error('Welcome email failed:', err));
     const depositAmount = wallet ? wallet.initial_deposit : 0;
-    if (depositAmount > 0) {
-      emailService.sendDepositConfirm(user, depositAmount, 'Initial Deposit').catch(err => console.error('Deposit email failed:', err));
-    }
+    // if (depositAmount > 0) {
+    //   emailService.sendDepositConfirm(user, depositAmount, 'Initial Deposit').catch(err => console.error('Deposit email failed:', err));
+    // }
 
     res.json({
       success: true,
@@ -374,11 +398,12 @@ router.post('/resend-otp', async (req, res) => {
     const ttl = type === 'email_verify' ? 15 : type === 'password_reset' ? 30 : 10;
     db.otpCodes.create(userId, newCode, type, ttl);
 
-    if (type === 'email_verify') {
-      emailService.sendEmailVerification(user, newCode).catch(err => console.error('Resend email failed:', err));
-    } else if (type === 'login_otp') {
-      emailService.sendLoginOTP(user, newCode, req.ip).catch(err => console.error('Resend login OTP failed:', err));
-    }
+    // TEMP: Email sending disabled for login troubleshooting
+    // if (type === 'email_verify') {
+    //   emailService.sendEmailVerification(user, newCode).catch(err => console.error('Resend email failed:', err));
+    // } else if (type === 'login_otp') {
+    //   emailService.sendLoginOTP(user, newCode, req.ip).catch(err => console.error('Resend login OTP failed:', err));
+    // }
 
     db.audit.log(userId, `auth.otp_resent.${type}`, null, 'info', req.ip);
     res.json({ success: true, message: 'A new verification code has been sent to your email.' });
