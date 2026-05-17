@@ -23,6 +23,7 @@ router.get('/', (req, res) => {
   if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
 
   res.json({
+    ok: true,
     balance: wallet.balance,
     initialDeposit: wallet.initial_deposit,
     totalDeposited: wallet.total_deposited,

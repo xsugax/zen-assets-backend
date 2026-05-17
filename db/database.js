@@ -1,528 +1,372 @@
 /* ════════════════════════════════════════════════════════════
-   database.js — SQLite Database Layer
-   ZEN ASSETS Backend
+   db/database.js — ZEN ASSETS Database Module
+   SQLite + Better-SQLite3
 
-   Initialises schema, seeds admin, provides CRUD helpers.
+   Exports: db.init(), db.raw(), db.{users, sessions, otpCodes, wallets, transactions, audit}
 ════════════════════════════════════════════════════════════ */
 
 const Database = require('better-sqlite3');
-const path     = require('path');
-const fs       = require('fs');
-const bcrypt   = require('bcryptjs');
-const { v4: uuid } = require('uuid');
+const path      = require('path');
+const fs        = require('fs');
 
-let db;
+// ── Database Path ──────────────────────────────────────────
+const DB_PATH = path.join(__dirname, '../data/zen_assets.db');
 
-// ── Initialise ──────────────────────────────────────────────
+// ── Ensure Data Directory Exists ───────────────────────────
+if (!fs.existsSync(path.dirname(DB_PATH))) {
+  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+}
+
+// ── Database Connection ────────────────────────────────────
+let db = null;
+
+// ── Initialize Database ────────────────────────────────────
 function init() {
-  const dbPath = process.env.DB_PATH || './data/zen_assets.db';
-  const dir = path.dirname(dbPath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (db) return; // Already initialized
 
-  db = new Database(dbPath);
+  db = new Database(DB_PATH);
 
-  // Performance pragmas
+  // Enable WAL mode for better concurrency
   db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
+  db.pragma('cache_size = 1000000'); // 1GB cache
   db.pragma('foreign_keys = ON');
-  db.pragma('busy_timeout = 5000');
 
+  // Create tables if they don't exist
   createTables();
 
-  // Idempotent column additions (safe to run on existing databases)
-  try { db.prepare('ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0').run(); } catch {}
-  try { db.prepare('ALTER TABLE users ADD COLUMN pin_hash TEXT DEFAULT NULL').run(); } catch {}
+  // Prepare statements
+  prepareStatements();
 
-  seedAdmin();
+  console.log(`[DB] Connected to SQLite database at ${DB_PATH}`);
+}
 
-  console.log('✅ Database ready:', dbPath);
+// ── Create Tables ──────────────────────────────────────────
+function createTables() {
+  // Users table already exists, skip creation
+
+  // Sessions table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      token TEXT UNIQUE NOT NULL,
+      ip_address TEXT,
+      user_agent TEXT,
+      expires_at DATETIME NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  // OTP codes table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS otp_codes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      code TEXT NOT NULL,
+      type TEXT NOT NULL,
+      expires_at DATETIME NOT NULL,
+      used BOOLEAN DEFAULT FALSE,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Wallets table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS wallets (
+      id TEXT PRIMARY KEY,
+      user_id TEXT UNIQUE NOT NULL,
+      balance REAL DEFAULT 0.0,
+      currency TEXT DEFAULT 'USD',
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Transactions table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      amount REAL NOT NULL,
+      balance_before REAL NOT NULL,
+      balance_after REAL NOT NULL,
+      description TEXT,
+      reference_id TEXT,
+      status TEXT DEFAULT 'completed',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Audit log table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT,
+      action TEXT NOT NULL,
+      details TEXT,
+      level TEXT DEFAULT 'info',
+      ip_address TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Admin broadcasts table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS broadcasts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      admin_id TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      message TEXT NOT NULL,
+      recipient_emails TEXT NOT NULL,
+      sent_count INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (admin_id) REFERENCES users(id)
+    )
+  `);
+}
+
+// ── Prepare Statements ────────────────────────────────────
+function prepareStatements() {
+  // User operations
+  users.create = db.prepare(`
+    INSERT INTO users (id, email, password_hash, full_name)
+    VALUES (?, ?, ?, ?)
+  `);
+
+  users.findByEmail = db.prepare(`
+    SELECT * FROM users WHERE email = ? LIMIT 1
+  `);
+
+  users.findById = db.prepare(`
+    SELECT * FROM users WHERE id = ? LIMIT 1
+  `);
+
+  users.update = db.prepare(`
+    UPDATE users SET full_name = ?, tier = ?, kyc_status = ?
+    WHERE id = ?
+  `);
+
+  users.list = db.prepare(`
+    SELECT id, email, full_name, tier, kyc_status, created_at
+    FROM users ORDER BY created_at DESC
+  `);
+
+  // Session operations
+  sessions.create = db.prepare(`
+    INSERT INTO sessions (id, user_id, token_jti, ip_address, user_agent, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+
+  sessions.findByToken = db.prepare(`
+    SELECT s.*, u.email, u.full_name, u.tier
+    FROM sessions s
+    JOIN users u ON s.user_id = u.id
+    WHERE s.token_jti = ? AND s.expires_at > CURRENT_TIMESTAMP AND s.revoked = 0
+    LIMIT 1
+  `);
+
+  sessions.delete = db.prepare(`
+    UPDATE sessions SET revoked = 1 WHERE token_jti = ?
+  `);
+
+  sessions.revoke = db.prepare(`
+    UPDATE sessions SET revoked = 1 WHERE token_jti = ?
+  `);
+
+  sessions.revokeAllForUser = db.prepare(`
+    UPDATE sessions SET revoked = 1 WHERE user_id = ?
+  `);
+
+  sessions.cleanup = () => {
+    const stmt = db.prepare(`DELETE FROM sessions WHERE expires_at <= CURRENT_TIMESTAMP OR revoked = 1`);
+    const deleted = stmt.run();
+    if (deleted.changes > 0) {
+      console.log(`[DB] Cleaned up ${deleted.changes} expired/revoked sessions`);
+    }
+  };
+
+  // OTP operations
+  otpCodes.create = db.prepare(`
+    INSERT INTO otp_codes (user_id, code, type, expires_at)
+    VALUES (?, ?, ?, ?)
+  `);
+
+  otpCodes.findValid = db.prepare(`
+    SELECT * FROM otp_codes
+    WHERE user_id = ? AND code = ? AND type = ? AND expires_at > CURRENT_TIMESTAMP AND used = FALSE
+    LIMIT 1
+  `);
+
+  otpCodes.markUsed = db.prepare(`
+    UPDATE otp_codes SET used = TRUE WHERE id = ?
+  `);
+
+  otpCodes.cleanup = () => {
+    const stmt = db.prepare(`DELETE FROM otp_codes WHERE expires_at <= CURRENT_TIMESTAMP OR used = TRUE`);
+    const deleted = stmt.run();
+    if (deleted.changes > 0) {
+      console.log(`[DB] Cleaned up ${deleted.changes} expired/used OTP codes`);
+    }
+  };
+
+  // Wallet operations
+  wallets.findByUser = db.prepare(`
+    SELECT * FROM wallets WHERE user_id = ? LIMIT 1
+  `);
+
+  wallets.create = db.prepare(`
+    INSERT INTO wallets (id, user_id, balance, initial_deposit, total_deposited, total_withdrawn, total_earned, total_claimed, pending_earnings)
+    VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0)
+  `);
+
+  wallets.updateBalance = db.prepare(`
+    UPDATE wallets SET balance = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE user_id = ?
+  `);
+
+  wallets.creditBalance = (userId, amount) => {
+    const wallet = wallets.findByUser.get(userId);
+    if (!wallet) {
+      const walletId = require('crypto').randomUUID();
+      wallets.create.run(walletId, userId, amount);
+      return { before: 0, after: amount };
+    }
+    const newBalance = wallet.balance + amount;
+    wallets.updateBalance.run(newBalance, userId);
+    return { before: wallet.balance, after: newBalance };
+  };
+
+  wallets.debitBalance = (userId, amount) => {
+    const wallet = wallets.findByUser.get(userId);
+    if (!wallet || wallet.balance < amount) {
+      throw new Error('Insufficient balance');
+    }
+    const newBalance = wallet.balance - amount;
+    wallets.updateBalance.run(newBalance, userId);
+    return { before: wallet.balance, after: newBalance };
+  };
+
+  // Transaction operations
+  transactions.create = db.prepare(`
+    INSERT INTO transactions (id, user_id, type, amount, balance_before, balance_after, status, notes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  transactions.listByUser = db.prepare(`
+    SELECT * FROM transactions
+    WHERE user_id = ?
+    ORDER BY created_at DESC
+    LIMIT ? OFFSET ?
+  `);
+
+  transactions.countByUser = db.prepare(`
+    SELECT COUNT(*) as total FROM transactions WHERE user_id = ?
+  `);
+
+  // Audit operations
+  audit.log = db.prepare(`
+    INSERT INTO audit_log (id, user_id, action, severity, details, ip_address)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+
+  audit.list = db.prepare(`
+    SELECT a.*, u.email
+    FROM audit_log a
+    LEFT JOIN users u ON a.user_id = u.id
+    ORDER BY a.created_at DESC
+    LIMIT ? OFFSET ?
+  `);
+
+  // Broadcast operations
+  broadcasts.create = db.prepare(`
+    INSERT INTO broadcasts (admin_id, subject, message, recipient_emails)
+    VALUES (?, ?, ?, ?)
+  `);
+
+  broadcasts.list = db.prepare(`
+    SELECT b.*, u.email as admin_email
+    FROM broadcasts b
+    JOIN users u ON b.admin_id = u.id
+    ORDER BY b.created_at DESC
+    LIMIT ? OFFSET ?
+  `);
+}
+
+// ── Raw Database Access ────────────────────────────────────
+function raw() {
+  if (!db) throw new Error('Database not initialized');
   return db;
 }
 
-// ── Schema ──────────────────────────────────────────────────
-function createTables() {
-  db.exec(`
-    -- Users table
-    CREATE TABLE IF NOT EXISTS users (
-      id            TEXT PRIMARY KEY,
-      email         TEXT UNIQUE NOT NULL COLLATE NOCASE,
-      password_hash TEXT NOT NULL,
-      full_name     TEXT NOT NULL,
-      role          TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('user','admin')),
-      tier          TEXT NOT NULL DEFAULT 'gold' CHECK(tier IN ('bronze','silver','gold','platinum','diamond')),
-      status        TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','suspended','banned')),
-      kyc_status    TEXT NOT NULL DEFAULT 'pending' CHECK(kyc_status IN ('pending','submitted','verified','rejected')),
-      phone         TEXT,
-      country       TEXT,
-      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-      last_login    TEXT,
-      login_count   INTEGER DEFAULT 0,
-      two_factor    INTEGER DEFAULT 0
-    );
-
-    -- Wallet — one per user
-    CREATE TABLE IF NOT EXISTS wallets (
-      id              TEXT PRIMARY KEY,
-      user_id         TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-      balance         REAL NOT NULL DEFAULT 0 CHECK(balance >= 0),
-      initial_deposit REAL NOT NULL DEFAULT 0,
-      total_deposited REAL NOT NULL DEFAULT 0,
-      total_withdrawn REAL NOT NULL DEFAULT 0,
-      total_earned    REAL NOT NULL DEFAULT 0,
-      total_claimed   REAL NOT NULL DEFAULT 0,
-      pending_earnings REAL NOT NULL DEFAULT 0,
-      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
-    -- Transactions ledger — every money movement
-    CREATE TABLE IF NOT EXISTS transactions (
-      id             TEXT PRIMARY KEY,
-      user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      type           TEXT NOT NULL CHECK(type IN (
-        'deposit','withdrawal','trade_profit','trade_loss',
-        'bonus_daily','bonus_weekly','interest','claim',
-        'admin_credit','admin_debit','fee'
-      )),
-      amount         REAL NOT NULL,
-      status         TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','completed','rejected','cancelled')),
-      method         TEXT,
-      reference      TEXT,
-      balance_before REAL,
-      balance_after  REAL,
-      notes          TEXT,
-      created_at     TEXT NOT NULL DEFAULT (datetime('now')),
-      processed_at   TEXT,
-      processed_by   TEXT REFERENCES users(id)
-    );
-
-    -- Sessions — JWT tracking for revocation
-    CREATE TABLE IF NOT EXISTS sessions (
-      id         TEXT PRIMARY KEY,
-      user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      token_jti  TEXT UNIQUE NOT NULL,
-      ip_address TEXT,
-      user_agent TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      expires_at TEXT NOT NULL,
-      revoked    INTEGER DEFAULT 0
-    );
-
-    -- Audit log
-    CREATE TABLE IF NOT EXISTS audit_log (
-      id         TEXT PRIMARY KEY,
-      user_id    TEXT REFERENCES users(id),
-      action     TEXT NOT NULL,
-      severity   TEXT DEFAULT 'info' CHECK(severity IN ('info','warn','error','critical')),
-      details    TEXT,
-      ip_address TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
-    -- Trade history
-    CREATE TABLE IF NOT EXISTS trades (
-      id          TEXT PRIMARY KEY,
-      user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      symbol      TEXT NOT NULL,
-      side        TEXT NOT NULL CHECK(side IN ('buy','sell')),
-      order_type  TEXT DEFAULT 'market' CHECK(order_type IN ('market','limit','stop','stop_limit')),
-      quantity    REAL NOT NULL,
-      entry_price REAL NOT NULL,
-      exit_price  REAL,
-      pnl         REAL DEFAULT 0,
-      fee         REAL DEFAULT 0,
-      status      TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed','cancelled','liquidated')),
-      strategy    TEXT,
-      notes       TEXT,
-      opened_at   TEXT NOT NULL DEFAULT (datetime('now')),
-      closed_at   TEXT
-    );
-
-    -- KYC document submissions
-    CREATE TABLE IF NOT EXISTS kyc_documents (
-      id              TEXT PRIMARY KEY,
-      user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      doc_type        TEXT NOT NULL CHECK(doc_type IN ('passport','national_id','drivers_license','residence_permit')),
-      doc_front       TEXT NOT NULL,
-      doc_back        TEXT,
-      selfie          TEXT,
-      full_name       TEXT,
-      date_of_birth   TEXT,
-      country         TEXT,
-      status          TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','superseded')),
-      reviewer_id     TEXT REFERENCES users(id),
-      reviewer_notes  TEXT,
-      submitted_at    TEXT NOT NULL DEFAULT (datetime('now')),
-      reviewed_at     TEXT
-    );
-
-    -- Indexes for performance
-    CREATE INDEX IF NOT EXISTS idx_users_email        ON users(email);
-    CREATE INDEX IF NOT EXISTS idx_wallets_user       ON wallets(user_id);
-    CREATE INDEX IF NOT EXISTS idx_transactions_user  ON transactions(user_id);
-    CREATE INDEX IF NOT EXISTS idx_transactions_type  ON transactions(type, status);
-    CREATE INDEX IF NOT EXISTS idx_sessions_user      ON sessions(user_id);
-    CREATE INDEX IF NOT EXISTS idx_sessions_jti       ON sessions(token_jti);
-    CREATE INDEX IF NOT EXISTS idx_trades_user        ON trades(user_id);
-    CREATE INDEX IF NOT EXISTS idx_audit_user         ON audit_log(user_id);
-    CREATE INDEX IF NOT EXISTS idx_kyc_user           ON kyc_documents(user_id);
-    CREATE INDEX IF NOT EXISTS idx_kyc_status         ON kyc_documents(status);
-    -- OTP codes — per-user, per-type isolated; never share codes between users
-    CREATE TABLE IF NOT EXISTS otp_codes (
-      id         TEXT PRIMARY KEY,
-      user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      code       TEXT NOT NULL,
-      type       TEXT NOT NULL CHECK(type IN ('email_verify','login_otp','password_reset')),
-      expires_at TEXT NOT NULL,
-      used       INTEGER DEFAULT 0,
-      attempts   INTEGER DEFAULT 0,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_otp_user ON otp_codes(user_id, type, used);  `);
-}
-
-// ── Seed Admin User ─────────────────────────────────────────
-function seedAdmin() {
-  const email = process.env.ADMIN_EMAIL || 'admin@zenassets.com';
-  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
-  if (existing) return;
-
-  const password = process.env.ADMIN_PASSWORD || 'ZenAdmin2026!';
-  const hash = bcrypt.hashSync(password, 12);
-  const id = uuid();
-
-  db.prepare(`
-    INSERT INTO users (id, email, password_hash, full_name, role, tier, status, kyc_status)
-    VALUES (?, ?, ?, ?, 'admin', 'diamond', 'active', 'verified')
-  `).run(id, email, hash, process.env.ADMIN_NAME || 'ZEN Admin');
-
-  db.prepare(`
-    INSERT INTO wallets (id, user_id, balance, initial_deposit)
-    VALUES (?, ?, 0, 0)
-  `).run(uuid(), id);
-
-  console.log(`🔐 Admin seeded: ${email}`);
-}
-
-// ═══════════════════════════════════════════════════════════
-//  CRUD HELPERS
-// ═══════════════════════════════════════════════════════════
-
-// ── Users ───────────────────────────────────────────────────
+// ── User Operations ────────────────────────────────────────
 const users = {
-  findByEmail(email) {
-    return db.prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE').get(email);
-  },
-  findById(id) {
-    return db.prepare('SELECT id, email, full_name, role, tier, status, kyc_status, phone, country, created_at, last_login, login_count, two_factor FROM users WHERE id = ?').get(id);
-  },
-  create({ email, passwordHash, fullName, tier = 'gold', role = 'user' }) {
-    const id = uuid();
-    db.prepare(`
-      INSERT INTO users (id, email, password_hash, full_name, tier, role)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(id, email.toLowerCase(), passwordHash, fullName, tier, role);
-    return id;
-  },
-  updateLogin(id) {
-    db.prepare(`
-      UPDATE users SET last_login = datetime('now'), login_count = login_count + 1 WHERE id = ?
-    `).run(id);
-  },
-  updateStatus(id, status) {
-    db.prepare('UPDATE users SET status = ? WHERE id = ?').run(status, id);
-  },
-  updateTier(id, tier) {
-    db.prepare('UPDATE users SET tier = ? WHERE id = ?').run(tier, id);
-  },
-  updateKYC(id, kycStatus) {
-    db.prepare('UPDATE users SET kyc_status = ? WHERE id = ?').run(kycStatus, id);
-  },
-  setPin(id, pinHash) {
-    db.prepare('UPDATE users SET pin_hash = ? WHERE id = ?').run(pinHash, id);
-  },
-  findByPin(pinHash) {
-    // PIN is unique — only one user should match
-    return db.prepare('SELECT * FROM users WHERE pin_hash = ? AND status = \'active\'').get(pinHash);
-  },
-  list({ page = 1, limit = 20, search = '', status = '', tier = '' } = {}) {
-    let where = 'WHERE role != \'admin\'';
-    const params = [];
-    if (search) { where += ' AND (email LIKE ? OR full_name LIKE ?)'; params.push(`%${search}%`, `%${search}%`); }
-    if (status) { where += ' AND status = ?'; params.push(status); }
-    if (tier)   { where += ' AND tier = ?'; params.push(tier); }
-
-    const total = db.prepare(`SELECT COUNT(*) as count FROM users ${where}`).get(...params).count;
-    const offset = (page - 1) * limit;
-    const rows = db.prepare(`
-      SELECT u.id, u.email, u.full_name, u.role, u.tier, u.status, u.kyc_status,
-             u.created_at, u.last_login, u.login_count,
-             w.balance, w.total_deposited, w.total_withdrawn, w.total_earned
-      FROM users u LEFT JOIN wallets w ON w.user_id = u.id
-      ${where}
-      ORDER BY u.created_at DESC
-      LIMIT ? OFFSET ?
-    `).all(...params, limit, offset);
-
-    return { users: rows, total, page, pages: Math.ceil(total / limit) };
-  },
-  count() {
-    return db.prepare('SELECT COUNT(*) as count FROM users WHERE role != \'admin\'').get().count;
-  },
-  delete(id) {
-    return db.prepare('DELETE FROM users WHERE id = ? AND role != \'admin\'').run(id);
-  },
+  create: null,
+  findByEmail: null,
+  findById: null,
+  update: null,
+  list: null
 };
 
-// ── Wallets ─────────────────────────────────────────────────
-const wallets = {
-  findByUser(userId) {
-    return db.prepare('SELECT * FROM wallets WHERE user_id = ?').get(userId);
-  },
-  create(userId, initialDeposit = 0) {
-    const id = uuid();
-    db.prepare(`
-      INSERT INTO wallets (id, user_id, balance, initial_deposit, total_deposited)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(id, userId, initialDeposit, initialDeposit, initialDeposit);
-    return id;
-  },
-  creditBalance(userId, amount, reason = '') {
-    const wallet = this.findByUser(userId);
-    if (!wallet) throw new Error('Wallet not found');
-    const newBalance = wallet.balance + amount;
-    db.prepare(`
-      UPDATE wallets SET balance = ?, total_earned = total_earned + ?, updated_at = datetime('now') WHERE user_id = ?
-    `).run(newBalance, amount, userId);
-    return { before: wallet.balance, after: newBalance };
-  },
-  debitBalance(userId, amount) {
-    const wallet = this.findByUser(userId);
-    if (!wallet) throw new Error('Wallet not found');
-    if (wallet.balance < amount) throw new Error('Insufficient balance');
-    const newBalance = wallet.balance - amount;
-    db.prepare(`
-      UPDATE wallets SET balance = ?, updated_at = datetime('now') WHERE user_id = ?
-    `).run(newBalance, userId);
-    return { before: wallet.balance, after: newBalance };
-  },
-  addDeposit(userId, amount) {
-    const wallet = this.findByUser(userId);
-    if (!wallet) throw new Error('Wallet not found');
-    const newBalance = wallet.balance + amount;
-    db.prepare(`
-      UPDATE wallets SET balance = ?, total_deposited = total_deposited + ?, updated_at = datetime('now') WHERE user_id = ?
-    `).run(newBalance, amount, userId);
-    return { before: wallet.balance, after: newBalance };
-  },
-  processWithdrawal(userId, amount) {
-    const wallet = this.findByUser(userId);
-    if (!wallet) throw new Error('Wallet not found');
-    if (wallet.balance < amount) throw new Error('Insufficient balance');
-    const newBalance = wallet.balance - amount;
-    db.prepare(`
-      UPDATE wallets SET balance = ?, total_withdrawn = total_withdrawn + ?, updated_at = datetime('now') WHERE user_id = ?
-    `).run(newBalance, amount, userId);
-    return { before: wallet.balance, after: newBalance };
-  },
-  setBalance(userId, newBalance) {
-    db.prepare(`
-      UPDATE wallets SET balance = ?, updated_at = datetime('now') WHERE user_id = ?
-    `).run(newBalance, userId);
-  },
-};
-
-// ── Transactions ────────────────────────────────────────────
-const transactions = {
-  create({ userId, type, amount, status = 'pending', method, reference, balanceBefore, balanceAfter, notes }) {
-    const id = uuid();
-    db.prepare(`
-      INSERT INTO transactions (id, user_id, type, amount, status, method, reference, balance_before, balance_after, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, userId, type, amount, status, method, reference, balanceBefore, balanceAfter, notes);
-    return id;
-  },
-  findById(id) {
-    return db.prepare('SELECT * FROM transactions WHERE id = ?').get(id);
-  },
-  updateStatus(id, status, processedBy = null) {
-    db.prepare(`
-      UPDATE transactions SET status = ?, processed_at = datetime('now'), processed_by = ? WHERE id = ?
-    `).run(status, processedBy, id);
-  },
-  listByUser(userId, { page = 1, limit = 20, type = '' } = {}) {
-    let where = 'WHERE user_id = ?';
-    const params = [userId];
-    if (type) { where += ' AND type = ?'; params.push(type); }
-    const total = db.prepare(`SELECT COUNT(*) as count FROM transactions ${where}`).get(...params).count;
-    const offset = (page - 1) * limit;
-    const rows = db.prepare(`SELECT * FROM transactions ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
-    return { transactions: rows, total, page, pages: Math.ceil(total / limit) };
-  },
-  listPending(type = '') {
-    let q = 'SELECT t.*, u.email, u.full_name FROM transactions t JOIN users u ON u.id = t.user_id WHERE t.status = \'pending\'';
-    if (type) q += ' AND t.type = ?';
-    q += ' ORDER BY t.created_at ASC';
-    return type ? db.prepare(q).all(type) : db.prepare(q).all();
-  },
-  stats() {
-    return db.prepare(`
-      SELECT
-        COUNT(*) as total,
-        SUM(CASE WHEN status = 'completed' THEN amount ELSE 0 END) as total_volume,
-        SUM(CASE WHEN type = 'deposit' AND status = 'completed' THEN amount ELSE 0 END) as total_deposits,
-        SUM(CASE WHEN type = 'withdrawal' AND status = 'completed' THEN amount ELSE 0 END) as total_withdrawals,
-        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_count
-      FROM transactions
-    `).get();
-  },
-};
-
-// ── Sessions ────────────────────────────────────────────────
+// ── Session Operations ─────────────────────────────────────
 const sessions = {
-  create({ userId, tokenJti, ipAddress, userAgent, expiresAt }) {
-    const id = uuid();
-    db.prepare(`
-      INSERT INTO sessions (id, user_id, token_jti, ip_address, user_agent, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(id, userId, tokenJti, ipAddress, userAgent, expiresAt);
-    return id;
-  },
-  findByJti(jti) {
-    return db.prepare('SELECT * FROM sessions WHERE token_jti = ? AND revoked = 0').get(jti);
-  },
-  revoke(jti) {
-    db.prepare('UPDATE sessions SET revoked = 1 WHERE token_jti = ?').run(jti);
-  },
-  revokeAllForUser(userId) {
-    db.prepare('UPDATE sessions SET revoked = 1 WHERE user_id = ?').run(userId);
-  },
-  cleanup() {
-    db.prepare("DELETE FROM sessions WHERE expires_at < datetime('now') OR revoked = 1").run();
-  },
+  create: null,
+  findByToken: null,
+  delete: null,
+  cleanup: null
 };
 
-// ── Audit Log ───────────────────────────────────────────────
-const audit = {
-  log(userId, action, details = '', severity = 'info', ipAddress = '') {
-    const id = uuid();
-    db.prepare(`
-      INSERT INTO audit_log (id, user_id, action, severity, details, ip_address)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(id, userId, action, severity, typeof details === 'object' ? JSON.stringify(details) : details, ipAddress);
-  },
-  list({ page = 1, limit = 50, userId = '', severity = '' } = {}) {
-    let where = 'WHERE 1=1';
-    const params = [];
-    if (userId) { where += ' AND a.user_id = ?'; params.push(userId); }
-    if (severity) { where += ' AND a.severity = ?'; params.push(severity); }
-    const total = db.prepare(`SELECT COUNT(*) as count FROM audit_log a ${where}`).get(...params).count;
-    const offset = (page - 1) * limit;
-    const rows = db.prepare(`
-      SELECT a.*, u.email, u.full_name
-      FROM audit_log a LEFT JOIN users u ON u.id = a.user_id
-      ${where}
-      ORDER BY a.created_at DESC LIMIT ? OFFSET ?
-    `).all(...params, limit, offset);
-    return { logs: rows, total, page, pages: Math.ceil(total / limit) };
-  },
-};
-
-// ── Trades ──────────────────────────────────────────────────
-const trades = {
-  create({ userId, symbol, side, orderType = 'market', quantity, entryPrice, strategy }) {
-    const id = uuid();
-    db.prepare(`
-      INSERT INTO trades (id, user_id, symbol, side, order_type, quantity, entry_price, strategy)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, userId, symbol, side, orderType, quantity, entryPrice, strategy);
-    return id;
-  },
-  close(id, exitPrice, pnl, fee = 0) {
-    db.prepare(`
-      UPDATE trades SET exit_price = ?, pnl = ?, fee = ?, status = 'closed', closed_at = datetime('now') WHERE id = ?
-    `).run(exitPrice, pnl, fee, id);
-  },
-  listByUser(userId, { page = 1, limit = 20, status = '' } = {}) {
-    let where = 'WHERE user_id = ?';
-    const params = [userId];
-    if (status) { where += ' AND status = ?'; params.push(status); }
-    const total = db.prepare(`SELECT COUNT(*) as count FROM trades ${where}`).get(...params).count;
-    const offset = (page - 1) * limit;
-    const rows = db.prepare(`SELECT * FROM trades ${where} ORDER BY opened_at DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
-    return { trades: rows, total, page, pages: Math.ceil(total / limit) };
-  },
-  openPositions(userId) {
-    return db.prepare('SELECT * FROM trades WHERE user_id = ? AND status = \'open\' ORDER BY opened_at DESC').all(userId);
-  },
-  stats(userId) {
-    return db.prepare(`
-      SELECT
-        COUNT(*) as total_trades,
-        SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
-        SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
-        SUM(pnl) as total_pnl,
-        AVG(pnl) as avg_pnl,
-        MAX(pnl) as best_trade,
-        MIN(pnl) as worst_trade
-      FROM trades WHERE user_id = ? AND status = 'closed'
-    `).get(userId);
-  },
-};
-
-// ── OTP Codes — per-user, per-type code storage ────────────
+// ── OTP Operations ─────────────────────────────────────────
 const otpCodes = {
-  // Store a new code; invalidates any existing active code of the same type for this user
-  create(userId, code, type, expiresInMinutes = 10) {
-    const id = uuid();
-    const expiresAt = new Date(Date.now() + expiresInMinutes * 60 * 1000).toISOString();
-    db.prepare("UPDATE otp_codes SET used = 1 WHERE user_id = ? AND type = ? AND used = 0").run(userId, type);
-    db.prepare('INSERT INTO otp_codes (id, user_id, code, type, expires_at) VALUES (?, ?, ?, ?, ?)').run(id, userId, code, type, expiresAt);
-    return id;
-  },
-
-  // Verify a code; increments attempt counter; marks used on success or exhaustion
-  verify(userId, code, type) {
-    const row = db.prepare(
-      'SELECT * FROM otp_codes WHERE user_id = ? AND type = ? AND used = 0 ORDER BY created_at DESC LIMIT 1'
-    ).get(userId, type);
-    if (!row) return { ok: false, error: 'No verification code found. Request a new one.' };
-    if (new Date(row.expires_at) < new Date()) {
-      db.prepare('UPDATE otp_codes SET used = 1 WHERE id = ?').run(row.id);
-      return { ok: false, error: 'Code expired. Please request a new one.' };
-    }
-    if (row.attempts >= 5) {
-      db.prepare('UPDATE otp_codes SET used = 1 WHERE id = ?').run(row.id);
-      return { ok: false, error: 'Too many failed attempts. Please request a new code.' };
-    }
-    if (row.code !== String(code).trim()) {
-      db.prepare('UPDATE otp_codes SET attempts = attempts + 1 WHERE id = ?').run(row.id);
-      const left = 5 - (row.attempts + 1);
-      return { ok: false, error: `Incorrect code. ${left} attempt${left === 1 ? '' : 's'} remaining.` };
-    }
-    db.prepare('UPDATE otp_codes SET used = 1 WHERE id = ?').run(row.id);
-    return { ok: true };
-  },
-
-  // Rate-limit helper: was a code generated within the last 60 seconds?
-  recentlySent(userId, type) {
-    const row = db.prepare(
-      'SELECT created_at FROM otp_codes WHERE user_id = ? AND type = ? ORDER BY created_at DESC LIMIT 1'
-    ).get(userId, type);
-    if (!row) return false;
-    return (Date.now() - new Date(row.created_at).getTime()) < 60000;
-  },
-
-  // Periodic cleanup — called from server.js cron
-  cleanup() {
-    db.prepare("DELETE FROM otp_codes WHERE datetime(expires_at) < datetime('now') AND used = 0").run();
-    db.prepare("DELETE FROM otp_codes WHERE used = 1 AND datetime(created_at) < datetime('now', '-1 day')").run();
-  },
+  create: null,
+  findValid: null,
+  markUsed: null,
+  cleanup: null
 };
 
-// ── Raw DB access ───────────────────────────────────────────
-function raw() { return db; }
+// ── Wallet Operations ──────────────────────────────────────
+const wallets = {
+  findByUser: null,
+  create: null,
+  updateBalance: null,
+  creditBalance: null,
+  debitBalance: null
+};
 
+// ── Transaction Operations ────────────────────────────────
+const transactions = {
+  create: null,
+  listByUser: null,
+  countByUser: null
+};
+
+// ── Audit Operations ──────────────────────────────────────
+const audit = {
+  log: null,
+  list: null
+};
+
+// ── Broadcast Operations ───────────────────────────────────
+const broadcasts = {
+  create: null,
+  list: null
+};
+
+// ── Export Module ──────────────────────────────────────────
 module.exports = {
-  init, raw,
-  users, wallets, transactions, sessions, audit, trades, otpCodes,
+  init,
+  raw,
+  users,
+  sessions,
+  otpCodes,
+  wallets,
+  transactions,
+  audit,
+  broadcasts
 };

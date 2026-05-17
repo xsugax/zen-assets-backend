@@ -10,9 +10,26 @@
 
 const nodemailer = require('nodemailer');
 
-const FROM_NAME  = 'ZEN ASSETS';
-const FROM_EMAIL = process.env.EMAIL_FROM_ADDR || process.env.SMTP_FROM || process.env.SMTP_USER || 'no-reply@zenassets.tech';
+const FROM_NAME  = process.env.EMAIL_FROM_NAME || 'ZEN ASSETS';
+const FROM_EMAIL = process.env.EMAIL_FROM_ADDR || process.env.SMTP_USER || 'no-reply@zenassets.tech';
 const BRAND      = '#d4a574';
+
+// ─ Validate email configuration on startup ────────────────
+function validateEmailConfig() {
+  const hasResend = process.env.RESEND_API_KEY && !process.env.RESEND_API_KEY.startsWith('re_placeholder');
+  const hasSmtp = process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS;
+
+  if (!hasResend && !hasSmtp) {
+    console.warn('\n⚠ [EMAIL CONFIG] WARNING: No email driver configured!');
+    console.warn('  → Set RESEND_API_KEY for Resend (https://resend.com)');
+    console.warn('  → Or set SMTP_HOST, SMTP_USER, SMTP_PASS for Gmail\n');
+  } else if (hasResend) {
+    console.log(`[EMAIL CONFIG] ✓ Resend API enabled → FROM: ${FROM_EMAIL}`);
+  } else if (hasSmtp) {
+    console.log(`[EMAIL CONFIG] ✓ SMTP enabled (${process.env.SMTP_USER}) → FROM: ${FROM_EMAIL}`);
+  }
+}
+validateEmailConfig();
 
 // â”€â”€ Build SMTP transporter (lazy, cached) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 let _transport = null;
@@ -84,10 +101,11 @@ async function send({ to, subject, html }) {
       const { Resend } = require('resend');
       const resend = new Resend(resendKey);
       await resend.emails.send({ from: `${FROM_NAME} <${FROM_EMAIL}>`, to, subject, html });
-      console.log(`[EMAIL/Resend] âœ“ "${subject}" â†’ ${to}`);
+      console.log(`[EMAIL/Resend] OK "${subject}" -> ${to}`);
       return { ok: true, driver: 'resend' };
     } catch (err) {
-      console.error(`[EMAIL/Resend] âœ— "${subject}":`, err.message);
+      console.error(`[EMAIL/Resend] FAIL "${subject}":`, err.message);
+      // Fall through to SMTP fallback
     }
   }
 
@@ -96,15 +114,18 @@ async function send({ to, subject, html }) {
   if (transport) {
     try {
       await transport.sendMail({ from: `"${FROM_NAME}" <${FROM_EMAIL}>`, to, subject, html });
-      console.log(`[EMAIL/SMTP] âœ“ "${subject}" â†’ ${to}`);
+      console.log(`[EMAIL/SMTP] OK "${subject}" -> ${to}`);
       return { ok: true, driver: 'smtp' };
     } catch (err) {
-      console.error(`[EMAIL/SMTP] âœ— "${subject}":`, err.message);
+      console.error(`[EMAIL/SMTP] FAIL "${subject}":`, err.message);
     }
   }
 
   // Path 3: Console fallback
-  console.log(`[EMAIL/LOG] "${subject}" â†’ ${to}  (add RESEND_API_KEY or SMTP_* to enable real delivery)`);
+  console.warn(`\n[EMAIL/LOG] No real driver available — email logged to console only`);
+  console.warn(`  Subject: ${subject}`);
+  console.warn(`  To: ${to}`);
+  console.warn(`  From: ${FROM_NAME} <${FROM_EMAIL}>\n`);
   return { ok: true, driver: 'log' };
 }
 
