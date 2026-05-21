@@ -293,17 +293,25 @@ const users = {
     return db.prepare("SELECT COUNT(*) as c FROM users WHERE role != 'admin'").get().c;
   },
   list({ page = 1, limit = 20, search = '', status = '', tier = '' } = {}) {
-    let sql = "SELECT id, email, full_name, role, tier, status, kyc_status, email_verified, last_login, created_at FROM users WHERE role != 'admin'";
+    let sql = `
+      SELECT u.id, u.email, u.full_name, u.role, u.tier, u.status, u.kyc_status,
+             u.email_verified, u.last_login, u.created_at,
+             COALESCE(w.balance, 0) AS balance,
+             COALESCE(w.total_deposited, 0) AS total_deposited
+      FROM users u
+      LEFT JOIN wallets w ON w.user_id = u.id
+      WHERE u.role != 'admin'`;
     const params = [];
     if (search) {
-      sql += ' AND (email LIKE ? OR full_name LIKE ?)';
+      sql += ' AND (u.email LIKE ? OR u.full_name LIKE ?)';
       const q = `%${search}%`;
       params.push(q, q);
     }
-    if (status) { sql += ' AND status = ?'; params.push(status); }
-    if (tier) { sql += ' AND tier = ?'; params.push(tier); }
-    const total = db.prepare(sql.replace(/SELECT .+ FROM/, 'SELECT COUNT(*) as total FROM')).get(...params).total;
-    sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+    if (status) { sql += ' AND u.status = ?'; params.push(status); }
+    if (tier) { sql += ' AND u.tier = ?'; params.push(tier); }
+    const countSql = sql.replace(/SELECT[\s\S]+?FROM users u/, 'SELECT COUNT(*) AS total FROM users u');
+    const total = db.prepare(countSql).get(...params).total;
+    sql += ' ORDER BY u.created_at DESC LIMIT ? OFFSET ?';
     params.push(limit, (page - 1) * limit);
     const usersList = db.prepare(sql).all(...params);
     return { users: usersList, total, page, limit, pages: Math.ceil(total / limit) || 1 };

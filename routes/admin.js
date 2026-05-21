@@ -105,7 +105,20 @@ router.post('/users', async (req, res) => {
 
     const created = db.users.findById(userId);
     const wallet = db.wallets.findByUser(userId);
-    res.status(201).json({ success: true, user: created, wallet });
+    res.status(201).json({
+      success: true,
+      user: {
+        id: created.id,
+        email: created.email,
+        fullName: created.full_name,
+        role: created.role,
+        tier: created.tier,
+        status: created.status,
+        kycStatus: created.kyc_status,
+        createdAt: created.created_at,
+      },
+      wallet,
+    });
   } catch (err) {
     console.error('Admin create user error:', err);
     res.status(500).json({ error: 'Failed to create user' });
