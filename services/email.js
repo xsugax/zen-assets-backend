@@ -306,6 +306,33 @@ async function sendLoginOTP(user, code, ip = 'Unknown') {
   });
 }
 
+// Password reset code
+async function sendPasswordReset(user, code, ip = 'Unknown') {
+  const frontend = process.env.FRONTEND_URL || 'https://zenassets.tech';
+  return send({
+    to: user.email,
+    subject: `[${code}] ZEN ASSETS — Password Reset Code`,
+    html: wrap('Password Reset', `
+      <p>Hi <strong>${user.full_name || user.email}</strong>,</p>
+      <p>We received a request to reset your password. Enter this code on the reset screen:</p>
+      <div style="text-align:center;margin:32px 0">
+        <div style="display:inline-block;background:#0f1729;border:2px solid ${BRAND};border-radius:16px;padding:28px 56px">
+          <div style="font-size:11px;color:#9ca3af;letter-spacing:3px;text-transform:uppercase;margin-bottom:12px">Reset Code</div>
+          <div style="font-size:48px;font-weight:800;letter-spacing:16px;color:${BRAND};font-family:'Courier New',monospace">${code}</div>
+        </div>
+      </div>
+      <div class="alert">
+        <div class="stat"><span class="label">Expires in</span><span class="value">30 minutes</span></div>
+        <div class="stat"><span class="label">IP Address</span><span class="value">${ip}</span></div>
+      </div>
+      <p style="color:#9ca3af;font-size:13px">If you did not request this, ignore this email. Your password will not change.</p>
+      <div style="text-align:center">
+        <a href="${frontend}" class="btn">Open ZEN ASSETS</a>
+      </div>
+    `),
+  });
+}
+
 module.exports = {
   sendWelcome,
   sendDepositConfirm,
@@ -314,4 +341,5 @@ module.exports = {
   sendEarningsCredit,
   sendEmailVerification,
   sendLoginOTP,
+  sendPasswordReset,
 };

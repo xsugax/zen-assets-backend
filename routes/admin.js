@@ -67,8 +67,8 @@ router.post('/users', async (req, res) => {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userEmail)) {
       return res.status(400).json({ error: 'Invalid email format' });
     }
-    if (password.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
     const existing = db.users.findByEmail(userEmail);
     if (existing) {
@@ -397,8 +397,8 @@ router.post('/users/:id/set-pin', async (req, res) => {
 router.post('/users/:id/reset-password', async (req, res) => {
   try {
     const { password } = req.body;
-    if (!password || password.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    if (!password || password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
 
     const user = db.users.findById(req.params.id);
@@ -416,6 +416,39 @@ router.post('/users/:id/reset-password', async (req, res) => {
   } catch (err) {
     console.error('Admin password reset error:', err);
     res.status(500).json({ error: 'Failed to reset password' });
+  }
+});
+
+// ── Send transactional email (server-side only — no Vercel secret in browser) ──
+router.post('/notify-email', async (req, res) => {
+  try {
+    const { type, email: rawEmail, amount, method, status, reason, earnings } = req.body;
+    const email = (rawEmail || '').toLowerCase();
+    const user = db.users.findByEmail(email);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    switch (type) {
+      case 'deposit':
+        await email.sendDepositConfirm(user, parseFloat(amount) || 0, method || 'Admin credit');
+        break;
+      case 'withdrawal':
+        await email.sendWithdrawalUpdate(user, parseFloat(amount) || 0, status || 'pending', reason || method || '');
+        break;
+      case 'welcome':
+        await email.sendWelcome(user);
+        break;
+      case 'weekly-report':
+        await email.sendEarningsCredit(user, parseFloat(earnings) || 0);
+        break;
+      default:
+        return res.status(400).json({ error: 'Unknown notification type' });
+    }
+
+    db.audit.log(req.user.id, 'admin.email_sent', { type, email }, 'info', req.ip);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Admin notify-email error:', err);
+    res.status(500).json({ error: 'Failed to send email' });
   }
 });
 

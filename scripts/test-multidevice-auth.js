@@ -83,6 +83,23 @@ async function main() {
   }
   console.log('OK sessions list:', sessions.data.sessions.length, 'active');
 
+  const health = await req('/health');
+  if (health.status !== 200 || health.data.db !== 'connected') {
+    console.error('FAIL health', health.status, health.data);
+    process.exit(1);
+  }
+  console.log('OK health + DB');
+
+  const forgot = await req('/auth/forgot-password', {
+    method: 'POST',
+    body: { email },
+  });
+  if (forgot.status !== 200) {
+    console.error('FAIL forgot-password', forgot.status, forgot.data);
+    process.exit(1);
+  }
+  console.log('OK forgot-password (generic success)');
+
   console.log('\nAll multi-device auth checks passed.');
 }
 

@@ -21,13 +21,14 @@ services:
       - key: ADMIN_EMAIL
         value: admin@zenassets.com
       - key: ADMIN_PASSWORD
-        value: ZenAdmin2026!
+        sync: false
       - key: ADMIN_NAME
         value: ZEN Admin
       - key: FRONTEND_URL
         value: https://zenassets.tech
       - key: DB_PATH
         value: ./data/zen_assets.db
+      # Attach a Render persistent disk at /data and set DB_PATH=/data/zen_assets.db for production retention
       - key: LOGIN_RATE_LIMIT
         value: 10
       - key: LOGIN_RATE_WINDOW

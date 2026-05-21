@@ -56,8 +56,9 @@ router.post('/', authenticate, (req, res) => {
       closed_at || (tradeStatus === 'closed' ? new Date().toISOString() : null),
     );
 
-    // If profitable closed trade, record balance movement as transaction
-    if (tradeStatus === 'closed' && pnl && pnl !== 0) {
+    // Demo trades: only apply client PnL to wallet when explicitly enabled
+    const trustClientPnl = process.env.TRUST_CLIENT_TRADE_PNL === 'true';
+    if (trustClientPnl && tradeStatus === 'closed' && pnl && pnl !== 0) {
       const wallet = db.wallets.findByUser(userId);
       if (wallet) {
         const txType = pnl > 0 ? 'trade_profit' : 'trade_loss';

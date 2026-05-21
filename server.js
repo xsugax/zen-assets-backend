@@ -107,6 +107,10 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
+// ── Stripe webhook (raw body BEFORE json parser) ────────────
+const stripeRoutes = require('./routes/stripe');
+app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }), stripeRoutes);
+
 // ── Body Parsing ────────────────────────────────────────────
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -155,8 +159,17 @@ app.get('/', (req, res) => {
 });
 
 app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
+  let dbOk = false;
+  try {
+    db.raw().prepare('SELECT 1 as ok').get();
+    dbOk = true;
+  } catch (e) {
+    console.error('[HEALTH] DB check failed:', e.message);
+  }
+  const status = dbOk ? 'ok' : 'degraded';
+  res.status(dbOk ? 200 : 503).json({
+    status,
+    db: dbOk ? 'connected' : 'error',
     version: '1.0.0',
     uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
@@ -168,15 +181,14 @@ const authRoutes   = require('./routes/auth');
 const adminRoutes  = require('./routes/admin');
 const walletRoutes = require('./routes/wallet');
 const tradesRoutes = require('./routes/trades');
-const stripeRoutes = require('./routes/stripe');
 const kycRoutes    = require('./routes/kyc');
-
-// Stripe webhook must receive raw body — register BEFORE express.json parses it
-app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
 
 // Apply stricter rate limit to auth endpoints
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/register', authLimiter);
+app.use('/api/auth/pin-login', authLimiter);
+app.use('/api/auth/forgot-password', authLimiter);
+app.use('/api/auth/reset-password', authLimiter);
 
 app.use('/api/auth',   authRoutes);
 app.use('/api/admin',  adminRoutes);

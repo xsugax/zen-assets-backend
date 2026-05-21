@@ -13,6 +13,7 @@ const express = require('express');
 const router  = express.Router();
 const db      = require('../db/database');
 const { authenticate } = require('../middleware/auth');
+const email   = require('../services/email');
 
 // All wallet routes require authentication
 router.use(authenticate);
@@ -148,6 +149,11 @@ router.post('/withdraw', (req, res) => {
       amount, method, address, txId,
     }, 'warn', req.ip);
 
+    const user = db.users.findById(req.user.id);
+    if (user) {
+      email.sendWithdrawalUpdate(user, amount, 'pending', method).catch(() => {});
+    }
+
     res.json({
       success: true,
       message: 'Withdrawal request submitted. Pending admin approval.',
@@ -171,8 +177,17 @@ router.post('/claim', (req, res) => {
     const wallet = db.wallets.findByUser(req.user.id);
     if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
 
+    const claimAmount = parseFloat(amount);
+    const pending = parseFloat(wallet.pending_earnings) || 0;
+    if (claimAmount > pending + 0.001) {
+      return res.status(400).json({
+        error: `Cannot claim more than pending earnings ($${pending.toFixed(2)})`,
+        pendingEarnings: pending,
+      });
+    }
+
     // Transfer from pending -> balance
-    const newBalance = wallet.balance + amount;
+    const newBalance = wallet.balance + claimAmount;
     db.raw().prepare(`
       UPDATE wallets SET
         balance = ?,
@@ -180,12 +195,12 @@ router.post('/claim', (req, res) => {
         pending_earnings = MAX(0, pending_earnings - ?),
         updated_at = datetime('now')
       WHERE user_id = ?
-    `).run(newBalance, amount, amount, req.user.id);
+    `).run(newBalance, claimAmount, claimAmount, req.user.id);
 
     db.transactions.create({
       userId: req.user.id,
       type: 'claim',
-      amount,
+      amount: claimAmount,
       status: 'completed',
       method: pool,
       balanceBefore: wallet.balance,
@@ -195,9 +210,10 @@ router.post('/claim', (req, res) => {
 
     res.json({
       success: true,
-      claimed: amount,
+      claimed: claimAmount,
       balanceBefore: wallet.balance,
       balanceAfter: newBalance,
+      pendingEarnings: Math.max(0, pending - claimAmount),
     });
   } catch (err) {
     console.error('Claim error:', err);

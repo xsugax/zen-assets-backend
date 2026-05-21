@@ -202,6 +202,30 @@ function createTables() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kyc_documents (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      doc_type TEXT,
+      doc_front TEXT,
+      doc_back TEXT,
+      selfie TEXT,
+      full_name TEXT,
+      date_of_birth TEXT,
+      country TEXT,
+      status TEXT DEFAULT 'pending',
+      reviewed_by TEXT,
+      review_notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      reviewed_at DATETIME,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  try {
+    db.exec(`ALTER TABLE users ADD COLUMN country TEXT`);
+  } catch (_) { /* column exists */ }
 }
 
 function prepareStatements() {

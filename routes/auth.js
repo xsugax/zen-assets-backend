@@ -31,7 +31,7 @@ function isValidEmail(addr) {
 
 // ── Password Strength Validator ─────────────────────────────
 function validatePassword(pwd) {
-  const minLength = parseInt(process.env.MIN_PASSWORD_LENGTH || 6, 10);
+  const minLength = parseInt(process.env.MIN_PASSWORD_LENGTH || 8, 10);
   const requireUpper = process.env.REQUIRE_UPPERCASE === 'true';
   const requireLower = process.env.REQUIRE_LOWERCASE === 'true';
   const requireNum = process.env.REQUIRE_NUMBERS === 'true';
@@ -117,6 +117,11 @@ router.post('/register', async (req, res) => {
 
     // Audit
     db.audit.log(userId, 'user.registered', { email, tier, depositAmount }, 'info', req.ip);
+
+    const newUser = db.users.findById(userId);
+    if (newUser) {
+      emailService.sendWelcome(newUser).catch(err => console.error('[AUTH] Welcome email failed:', err.message));
+    }
 
     // Activate account immediately (no OTP verification)
     db.raw().prepare("UPDATE users SET status = 'active', email_verified = 1 WHERE id = ?").run(userId);
@@ -325,8 +330,9 @@ router.post('/change-password', authenticate, async (req, res) => {
     if (!currentPassword || !newPassword) {
       return res.status(400).json({ error: 'Current and new password are required' });
     }
-    if (newPassword.length < 8) {
-      return res.status(400).json({ error: 'New password must be at least 8 characters' });
+    const pwdCheck = validatePassword(newPassword);
+    if (!pwdCheck.ok) {
+      return res.status(400).json({ error: pwdCheck.error });
     }
 
     // Get full user (with hash)
@@ -469,6 +475,74 @@ router.post('/resend-otp', async (req, res) => {
   } catch (err) {
     console.error('Resend OTP error:', err);
     res.status(500).json({ error: 'Failed to resend code. Please try again.' });
+  }
+});
+
+// ── Forgot Password (sends OTP code via email) ──────────────
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const email = (req.body.email || '').trim().toLowerCase();
+    if (!email || !isValidEmail(email)) {
+      return res.status(400).json({ error: 'Please enter a valid email address' });
+    }
+
+    const user = db.users.findByEmail(email);
+    if (user && user.status !== 'banned') {
+      if (db.otpCodes.recentlySent(user.id, 'password_reset')) {
+        return res.status(429).json({ error: 'Please wait 60 seconds before requesting another code.' });
+      }
+      const code = otpService.generate();
+      db.otpCodes.create(user.id, code, 'password_reset', 30);
+      emailService.sendPasswordReset(user, code, req.ip).catch(err => {
+        console.error('[AUTH] Password reset email failed:', err.message);
+      });
+      db.audit.log(user.id, 'auth.password_reset_requested', { ip: req.ip }, 'info', req.ip);
+    }
+
+    res.json({
+      success: true,
+      message: 'If that email is registered, a reset code has been sent. Check your inbox.',
+    });
+  } catch (err) {
+    console.error('Forgot password error:', err);
+    res.status(500).json({ error: 'Could not process request. Try again later.' });
+  }
+});
+
+// ── Reset Password (email + OTP code + new password) ────────
+router.post('/reset-password', async (req, res) => {
+  try {
+    const email = (req.body.email || '').trim().toLowerCase();
+    const { code, newPassword } = req.body;
+    if (!email || !code || !newPassword) {
+      return res.status(400).json({ error: 'Email, reset code, and new password are required' });
+    }
+
+    const pwdCheck = validatePassword(newPassword);
+    if (!pwdCheck.ok) {
+      return res.status(400).json({ error: pwdCheck.error });
+    }
+
+    const user = db.users.findByEmail(email);
+    if (!user) {
+      return res.status(400).json({ error: 'Invalid or expired reset code' });
+    }
+
+    const check = db.otpCodes.verify(user.id, String(code).trim(), 'password_reset');
+    if (!check.ok) {
+      return res.status(400).json({ error: check.error || 'Invalid or expired reset code' });
+    }
+
+    const newHash = await bcrypt.hash(newPassword, 12);
+    db.raw().prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(newHash, user.id);
+    db.sessions.revokeAllForUser(user.id);
+    db.refreshTokens.revokeAllForUser(user.id);
+    db.audit.log(user.id, 'auth.password_reset_completed', { ip: req.ip }, 'info', req.ip);
+
+    res.json({ success: true, message: 'Password updated. You can sign in with your new password.' });
+  } catch (err) {
+    console.error('Reset password error:', err);
+    res.status(500).json({ error: 'Failed to reset password. Please try again.' });
   }
 });
 
