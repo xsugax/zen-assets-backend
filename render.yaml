@@ -15,7 +15,9 @@ services:
       - key: JWT_SECRET
         generateValue: true
       - key: JWT_EXPIRES_IN
-        value: 7d
+        value: 15m
+      - key: REFRESH_EXPIRES_IN
+        value: 30d
       - key: ADMIN_EMAIL
         value: admin@zenassets.com
       - key: ADMIN_PASSWORD
@@ -23,7 +25,7 @@ services:
       - key: ADMIN_NAME
         value: ZEN Admin
       - key: FRONTEND_URL
-        value: https://zen-assets.surge.sh
+        value: https://zenassets.tech
       - key: DB_PATH
         value: ./data/zen_assets.db
       - key: LOGIN_RATE_LIMIT

@@ -13,7 +13,7 @@ const express    = require('express');
 const bcrypt     = require('bcryptjs');
 const router     = express.Router();
 const db         = require('../db/database');
-const { authenticate, generateToken } = require('../middleware/auth');
+const { authenticate, issueAuthCredentials } = require('../middleware/auth');
 const emailService = require('../services/email');
 const otpService = require('../services/otp');
 
@@ -121,15 +121,14 @@ router.post('/register', async (req, res) => {
     // Activate account immediately (no OTP verification)
     db.raw().prepare("UPDATE users SET status = 'active', email_verified = 1 WHERE id = ?").run(userId);
 
-    // Generate JWT so user is logged in right away
-    const { token, jti, expiresAt } = generateToken(userId, 'user');
-    db.sessions.create({ userId, tokenJti: jti, ipAddress: req.ip, userAgent: req.headers['user-agent'] || '', expiresAt });
-
+    const creds = issueAuthCredentials(userId, 'user', req);
     const wallet = db.wallets.findByUser(userId);
 
     res.status(201).json({
       success: true,
-      token,
+      token: creds.token,
+      refreshToken: creds.refreshToken,
+      expiresIn: creds.expiresIn,
       user: { id: userId, email, fullName, role: 'user', tier, status: 'active', kycStatus: 'none' },
       wallet: wallet ? { balance: wallet.balance, initialDeposit: wallet.initial_deposit, totalDeposited: wallet.total_deposited, totalWithdrawn: wallet.total_withdrawn, totalEarned: wallet.total_earned } : null,
     });
@@ -192,9 +191,7 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    // Generate JWT and create session
-    const { token, jti, expiresAt } = generateToken(user.id, user.role);
-    db.sessions.create({ userId: user.id, tokenJti: jti, ipAddress: req.ip, userAgent: req.headers['user-agent'] || '', expiresAt });
+    const creds = issueAuthCredentials(user.id, user.role, req);
     db.users.updateLogin(user.id);
 
     const wallet = db.wallets.findByUser(user.id);
@@ -204,7 +201,9 @@ router.post('/login', async (req, res) => {
 
     res.json({
       success: true,
-      token,
+      token: creds.token,
+      refreshToken: creds.refreshToken,
+      expiresIn: creds.expiresIn,
       user: { id: user.id, email: user.email, fullName: user.full_name, role: user.role, tier: user.tier, status: user.status, kycStatus: user.kyc_status },
       wallet: wallet ? { balance: wallet.balance, initialDeposit: wallet.initial_deposit, totalDeposited: wallet.total_deposited, totalWithdrawn: wallet.total_withdrawn, totalEarned: wallet.total_earned } : null,
     });
@@ -214,10 +213,61 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// ── Refresh access token ────────────────────────────────────
+router.post('/refresh', (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+    if (!refreshToken) {
+      return res.status(400).json({ error: 'refreshToken is required', code: 'NO_REFRESH_TOKEN' });
+    }
+
+    const row = db.refreshTokens.findByRawToken(refreshToken);
+    if (!row) {
+      return res.status(401).json({ error: 'Invalid or expired refresh token', code: 'REFRESH_INVALID' });
+    }
+
+    const user = db.users.findById(row.user_id);
+    if (!user || user.status !== 'active') {
+      db.refreshTokens.revoke(refreshToken);
+      return res.status(403).json({ error: 'Account not active', code: 'ACCOUNT_DISABLED' });
+    }
+
+    db.refreshTokens.revoke(refreshToken);
+    const creds = issueAuthCredentials(user.id, user.role, req);
+
+    res.json({
+      success: true,
+      token: creds.token,
+      refreshToken: creds.refreshToken,
+      expiresIn: creds.expiresIn,
+    });
+  } catch (err) {
+    console.error('[AUTH/REFRESH] error:', err);
+    res.status(500).json({ error: 'Token refresh failed' });
+  }
+});
+
+// ── List active sessions ──────────────────────────────────────
+router.get('/sessions', authenticate, (req, res) => {
+  const list = db.sessions.listByUser(req.user.id).map(s => ({
+    id: s.id,
+    jti: s.token_jti,
+    ipAddress: s.ip_address,
+    userAgent: s.user_agent,
+    createdAt: s.created_at,
+    expiresAt: s.expires_at,
+    current: s.token_jti === req.tokenJti,
+  }));
+  res.json({ sessions: list });
+});
+
 // ── Get Current User ────────────────────────────────────────
 router.get('/me', authenticate, (req, res) => {
   const wallet = db.wallets.findByUser(req.user.id);
-  const tradeStats = db.trades.stats(req.user.id);
+  let tradeStats = {};
+  try {
+    tradeStats = db.trades.stats(req.user.id) || {};
+  } catch (_) { /* trades optional */ }
 
   res.json({
     user: {
@@ -246,17 +296,26 @@ router.get('/me', authenticate, (req, res) => {
 
 // ── Logout ──────────────────────────────────────────────────
 router.post('/logout', authenticate, (req, res) => {
-  // Revoke current session
   db.sessions.revoke(req.tokenJti);
+  const { refreshToken } = req.body;
+  if (refreshToken) db.refreshTokens.revoke(refreshToken);
   db.audit.log(req.user.id, 'auth.logout', null, 'info', req.ip);
   res.json({ success: true, message: 'Logged out successfully' });
 });
 
-// ── Logout All Sessions ─────────────────────────────────────
+// ── Logout all other devices (re-issues token for this device) ─
 router.post('/logout-all', authenticate, (req, res) => {
   db.sessions.revokeAllForUser(req.user.id);
-  db.audit.log(req.user.id, 'auth.logout_all', null, 'info', req.ip);
-  res.json({ success: true, message: 'All sessions revoked' });
+  db.refreshTokens.revokeAllForUser(req.user.id);
+  const creds = issueAuthCredentials(req.user.id, req.user.role, req);
+  db.audit.log(req.user.id, 'auth.logout_all', { keptCurrent: true }, 'info', req.ip);
+  res.json({
+    success: true,
+    message: 'All other sessions revoked',
+    token: creds.token,
+    refreshToken: creds.refreshToken,
+    expiresIn: creds.expiresIn,
+  });
 });
 
 // ── Change Password ─────────────────────────────────────────
@@ -281,22 +340,20 @@ router.post('/change-password', authenticate, async (req, res) => {
     const newHash = await bcrypt.hash(newPassword, 12);
     db.raw().prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(newHash, req.user.id);
 
-    // Revoke all other sessions
     db.sessions.revokeAllForUser(req.user.id);
+    db.refreshTokens.revokeAllForUser(req.user.id);
 
-    // Re-issue token for current session
-    const { token, jti, expiresAt } = generateToken(req.user.id, req.user.role);
-    db.sessions.create({
-      userId: req.user.id,
-      tokenJti: jti,
-      ipAddress: req.ip,
-      userAgent: req.headers['user-agent'] || '',
-      expiresAt,
-    });
+    const creds = issueAuthCredentials(req.user.id, req.user.role, req);
 
     db.audit.log(req.user.id, 'auth.password_changed', null, 'info', req.ip);
 
-  res.json({ success: true, message: 'Password changed. All other sessions revoked.', token });
+  res.json({
+    success: true,
+    message: 'Password changed. All other sessions revoked.',
+    token: creds.token,
+    refreshToken: creds.refreshToken,
+    expiresIn: creds.expiresIn,
+  });
   } catch (err) {
     console.error('Change password error:', err);
     res.status(500).json({ error: 'Failed to change password' });
@@ -319,8 +376,7 @@ router.post('/verify-email', async (req, res) => {
     const user = db.raw().prepare('SELECT * FROM users WHERE id = ?').get(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const { token, jti, expiresAt } = generateToken(user.id, user.role);
-    db.sessions.create({ userId: user.id, tokenJti: jti, ipAddress: req.ip, userAgent: req.headers['user-agent'] || '', expiresAt });
+    const creds = issueAuthCredentials(user.id, user.role, req);
     db.users.updateLogin(user.id);
 
     const wallet = db.wallets.findByUser(user.id);
@@ -335,7 +391,9 @@ router.post('/verify-email', async (req, res) => {
 
     res.json({
       success: true,
-      token,
+      token: creds.token,
+      refreshToken: creds.refreshToken,
+      expiresIn: creds.expiresIn,
       user: { id: user.id, email: user.email, fullName: user.full_name, role: user.role, tier: user.tier, status: user.status, kycStatus: user.kyc_status },
       wallet: wallet ? { balance: wallet.balance, initialDeposit: wallet.initial_deposit, totalDeposited: wallet.total_deposited, totalWithdrawn: wallet.total_withdrawn, totalEarned: wallet.total_earned } : null,
     });
@@ -358,8 +416,7 @@ router.post('/verify-login-otp', async (req, res) => {
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (user.status === 'suspended') return res.status(403).json({ error: 'Account suspended. Contact support.' });
 
-    const { token, jti, expiresAt } = generateToken(user.id, user.role);
-    db.sessions.create({ userId: user.id, tokenJti: jti, ipAddress: req.ip, userAgent: req.headers['user-agent'] || '', expiresAt });
+    const creds = issueAuthCredentials(user.id, user.role, req);
     db.users.updateLogin(user.id);
 
     const wallet = db.wallets.findByUser(user.id);
@@ -367,7 +424,9 @@ router.post('/verify-login-otp', async (req, res) => {
 
     res.json({
       success: true,
-      token,
+      token: creds.token,
+      refreshToken: creds.refreshToken,
+      expiresIn: creds.expiresIn,
       user: { id: user.id, email: user.email, fullName: user.full_name, role: user.role, tier: user.tier, status: user.status, kycStatus: user.kyc_status },
       wallet: wallet ? { balance: wallet.balance, initialDeposit: wallet.initial_deposit, totalDeposited: wallet.total_deposited, totalWithdrawn: wallet.total_withdrawn, totalEarned: wallet.total_earned } : null,
     });
@@ -434,8 +493,7 @@ router.post('/pin-login', async (req, res) => {
     }
 
     // PIN login skips OTP for convenience
-    const { token, jti, expiresAt } = generateToken(user.id, user.role);
-    db.sessions.create({ userId: user.id, tokenJti: jti, ipAddress: req.ip, userAgent: req.headers['user-agent'] || '', expiresAt });
+    const creds = issueAuthCredentials(user.id, user.role, req);
     db.users.updateLogin(user.id);
 
     const wallet = db.wallets.findByUser(user.id);
@@ -443,7 +501,9 @@ router.post('/pin-login', async (req, res) => {
 
     res.json({
       success: true,
-      token,
+      token: creds.token,
+      refreshToken: creds.refreshToken,
+      expiresIn: creds.expiresIn,
       user: { id: user.id, email: user.email, fullName: user.full_name, role: user.role, tier: user.tier, status: user.status, kycStatus: user.kyc_status },
       wallet: wallet ? { balance: wallet.balance, initialDeposit: wallet.initial_deposit, totalDeposited: wallet.total_deposited, totalWithdrawn: wallet.total_withdrawn, totalEarned: wallet.total_earned } : null,
     });

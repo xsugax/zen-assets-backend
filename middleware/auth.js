@@ -59,7 +59,7 @@ function requireAdmin(req, res, next) {
 function generateToken(userId, role) {
   const { v4: uuid } = require('uuid');
   const jti = uuid();
-  const expiresIn = process.env.JWT_EXPIRES_IN || '7d';
+  const expiresIn = process.env.JWT_EXPIRES_IN || '15m';
 
   const token = jwt.sign(
     { sub: userId, role, jti },
@@ -74,4 +74,31 @@ function generateToken(userId, role) {
   return { token, jti, expiresAt };
 }
 
-module.exports = { authenticate, requireAdmin, generateToken };
+/** Create access JWT + DB session + refresh token for a login event */
+function issueAuthCredentials(userId, role, req) {
+  const { token, jti, expiresAt } = generateToken(userId, role);
+  db.sessions.create({
+    userId,
+    tokenJti: jti,
+    ipAddress: req.ip || '',
+    userAgent: req.headers['user-agent'] || '',
+    expiresAt,
+  });
+  const { refreshToken, expiresAt: refreshExpiresAt } = db.refreshTokens.create({
+    userId,
+    sessionJti: jti,
+    ipAddress: req.ip || '',
+    userAgent: req.headers['user-agent'] || '',
+  });
+  const decoded = require('jsonwebtoken').decode(token);
+  return {
+    token,
+    refreshToken,
+    jti,
+    expiresAt,
+    refreshExpiresAt,
+    expiresIn: decoded && decoded.exp ? decoded.exp - Math.floor(Date.now() / 1000) : 900,
+  };
+}
+
+module.exports = { authenticate, requireAdmin, generateToken, issueAuthCredentials, JWT_SECRET };
