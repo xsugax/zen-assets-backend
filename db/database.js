@@ -4,6 +4,7 @@
 ════════════════════════════════════════════════════════════ */
 
 const Database = require('better-sqlite3');
+const bcrypt   = require('bcryptjs');
 const crypto   = require('crypto');
 const path     = require('path');
 const fs       = require('fs');
@@ -27,7 +28,37 @@ function init() {
   db.pragma('foreign_keys = ON');
   createTables();
   prepareStatements();
+  seedAdmin();
   console.log(`[DB] Connected to SQLite database at ${DB_PATH}`);
+}
+
+/** Ensure admin exists on server (Render env: ADMIN_EMAIL / ADMIN_PASSWORD) */
+function seedAdmin() {
+  const email = (process.env.ADMIN_EMAIL || 'admin@zenassets.com').trim().toLowerCase();
+  const password = process.env.ADMIN_PASSWORD;
+  const fullName = process.env.ADMIN_NAME || 'ZEN Admin';
+  if (!password) {
+    console.warn('[DB] ADMIN_PASSWORD not set — admin seed skipped');
+    return;
+  }
+  const hash = bcrypt.hashSync(password, 12);
+  const existing = users.findByEmail(email);
+  if (!existing) {
+    const id = crypto.randomUUID();
+    db.prepare(`
+      INSERT INTO users (id, email, password_hash, full_name, role, tier, status, email_verified)
+      VALUES (?, ?, ?, ?, 'admin', 'diamond', 'active', 1)
+    `).run(id, email, hash, fullName);
+    wallets.create(id, 0);
+    console.log(`[DB] Admin account created: ${email}`);
+    return;
+  }
+  db.prepare(`
+    UPDATE users SET password_hash = ?, full_name = ?, role = 'admin', status = 'active', email_verified = 1
+    WHERE email = ?
+  `).run(hash, fullName, email);
+  if (!wallets.findByUser(existing.id)) wallets.create(existing.id, 0);
+  console.log(`[DB] Admin account synced: ${email}`);
 }
 
 function createTables() {
