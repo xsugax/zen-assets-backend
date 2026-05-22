@@ -50,6 +50,79 @@ router.get('/transactions', (req, res) => {
   res.json(result);
 });
 
+// ── Statement export (CSV; printable HTML for PDF) ────────────
+router.get('/statement', (req, res) => {
+  const user = db.users.findById(req.user.id);
+  const wallet = db.wallets.findByUser(req.user.id);
+  if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+
+  const { format = 'csv', limit = 500 } = req.query;
+  const { transactions } = db.transactions.listByUser(req.user.id, {
+    page: 1,
+    limit: Math.min(parseInt(limit, 10) || 500, 2000),
+  });
+
+  const generated = new Date().toISOString();
+  const header = [
+    'ZEN ASSETS — Account statement',
+    `Client: ${user.full_name || user.email}`,
+    `Email: ${user.email}`,
+    `Tier: ${user.tier}`,
+    `Generated: ${generated}`,
+    `Wallet balance: $${Number(wallet.balance).toFixed(2)}`,
+    `Total deposited: $${Number(wallet.total_deposited).toFixed(2)}`,
+    `Total withdrawn: $${Number(wallet.total_withdrawn).toFixed(2)}`,
+    `Total earned: $${Number(wallet.total_earned).toFixed(2)}`,
+    '',
+  ];
+
+  if (format === 'html') {
+    const rows = transactions.map(tx => `
+      <tr>
+        <td>${tx.created_at || ''}</td>
+        <td>${tx.type}</td>
+        <td>${tx.status}</td>
+        <td>${Number(tx.amount).toFixed(2)}</td>
+        <td>${Number(tx.balance_before).toFixed(2)}</td>
+        <td>${Number(tx.balance_after).toFixed(2)}</td>
+        <td>${(tx.method || '').replace(/</g, '')}</td>
+        <td>${(tx.notes || '').replace(/</g, '')}</td>
+      </tr>`).join('');
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>ZEN Statement</title>
+<style>body{font-family:system-ui,sans-serif;padding:24px;color:#111}table{border-collapse:collapse;width:100%;font-size:12px}
+th,td{border:1px solid #ccc;padding:6px 8px;text-align:left}th{background:#f0f0f0}h1{font-size:18px}</style></head><body>
+<h1>ZEN ASSETS — Account statement</h1>
+<p><strong>${user.full_name || user.email}</strong> · ${user.email}<br>
+Balance: $${Number(wallet.balance).toFixed(2)} · Generated ${generated}</p>
+<table><thead><tr><th>Date</th><th>Type</th><th>Status</th><th>Amount</th><th>Before</th><th>After</th><th>Method</th><th>Notes</th></tr></thead>
+<tbody>${rows || '<tr><td colspan="8">No transactions</td></tr>'}</tbody></table>
+<p style="font-size:11px;color:#666">Illustrative session earnings may appear separately in the dashboard. Use browser Print → Save as PDF.</p>
+</body></html>`;
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Content-Disposition', 'inline; filename="zen-statement.html"');
+    return res.send(html);
+  }
+
+  const esc = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+  const lines = [
+    ...header,
+    'date,type,status,amount,balance_before,balance_after,method,notes',
+    ...transactions.map(tx => [
+      tx.created_at,
+      tx.type,
+      tx.status,
+      tx.amount,
+      tx.balance_before,
+      tx.balance_after,
+      tx.method || '',
+      (tx.notes || '').replace(/\n/g, ' '),
+    ].map(esc).join(',')),
+  ];
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="zen-statement-${req.user.id.slice(0, 8)}.csv"`);
+  res.send(lines.join('\n'));
+});
+
 // ── Request Deposit ─────────────────────────────────────────
 router.post('/deposit', (req, res) => {
   try {

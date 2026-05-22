@@ -16,6 +16,8 @@ const DEFAULT_COPY_TRADE = {
   percent: 15,
 };
 
+const VALID_EXPERIENCE_TIERS = ['novice', 'professional'];
+
 function parseSettingsJson(raw) {
   if (!raw) return {};
   try {
@@ -68,6 +70,13 @@ function mergeSettings(existingRaw, patch = {}) {
     next.profitPaused = patch.profitPaused;
   }
 
+  if (patch.experienceTier != null) {
+    const t = String(patch.experienceTier).toLowerCase();
+    if (VALID_EXPERIENCE_TIERS.includes(t)) {
+      next.experienceTier = t;
+    }
+  }
+
   return next;
 }
 
@@ -80,11 +89,15 @@ function attachSettingsToUser(row) {
     copyTrade: normalizeCopyTrade(null, settings.copyTrade),
     tradingPaused: !!settings.tradingPaused,
     profitPaused: !!settings.profitPaused,
+    experienceTier: VALID_EXPERIENCE_TIERS.includes(settings.experienceTier)
+      ? settings.experienceTier
+      : 'novice',
   };
 }
 
 module.exports = {
   VALID_COPY_MODES,
+  VALID_EXPERIENCE_TIERS,
   DEFAULT_COPY_TRADE,
   parseSettingsJson,
   normalizeCopyTrade,

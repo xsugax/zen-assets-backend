@@ -16,7 +16,7 @@ const db         = require('../db/database');
 const { authenticate, issueAuthCredentials } = require('../middleware/auth');
 const emailService = require('../services/email');
 const otpService = require('../services/otp');
-const { attachSettingsToUser } = require('../utils/user-settings');
+const { attachSettingsToUser, mergeSettings } = require('../utils/user-settings');
 
 function clientUser(row) {
   const u = attachSettingsToUser(row);
@@ -31,6 +31,8 @@ function clientUser(row) {
     copyTrade: u.copyTrade,
     tradingPaused: u.tradingPaused,
     profitPaused: u.profitPaused,
+    experienceTier: u.experienceTier,
+    settings: u.settings,
   };
 }
 
@@ -317,6 +319,7 @@ router.get('/me', authenticate, (req, res) => {
       copyTrade: userWithSettings.copyTrade,
       tradingPaused: userWithSettings.tradingPaused,
       profitPaused: userWithSettings.profitPaused,
+      experienceTier: userWithSettings.experienceTier,
     },
     wallet: wallet ? {
       balance: wallet.balance,
@@ -353,6 +356,34 @@ router.post('/logout-all', authenticate, (req, res) => {
     refreshToken: creds.refreshToken,
     expiresIn: creds.expiresIn,
   });
+});
+
+// ── User settings (experience density, etc.) ────────────────
+router.patch('/settings', authenticate, (req, res) => {
+  try {
+    const user = db.users.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const merged = mergeSettings(user.settings_json, req.body || {});
+    db.users.updateSettings(req.user.id, merged);
+    const updated = attachSettingsToUser(db.users.findById(req.user.id));
+
+    db.audit.log(req.user.id, 'auth.settings_updated', {
+      experienceTier: updated.experienceTier,
+    }, 'info', req.ip);
+
+    res.json({
+      success: true,
+      settings: updated.settings,
+      experienceTier: updated.experienceTier,
+      copyTrade: updated.copyTrade,
+      tradingPaused: updated.tradingPaused,
+      profitPaused: updated.profitPaused,
+    });
+  } catch (err) {
+    console.error('[AUTH/SETTINGS] error:', err);
+    res.status(500).json({ error: 'Failed to update settings' });
+  }
 });
 
 // ── Change Password ─────────────────────────────────────────
