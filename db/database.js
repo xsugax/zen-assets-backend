@@ -310,6 +310,11 @@ const users = {
   updateKYC(userId, kycStatus) {
     db.prepare('UPDATE users SET kyc_status = ? WHERE id = ?').run(kycStatus, userId);
   },
+  updateFullName(userId, fullName) {
+    const name = (fullName || '').trim();
+    if (!name) return;
+    db.prepare('UPDATE users SET full_name = ? WHERE id = ?').run(name, userId);
+  },
   delete(userId) {
     db.prepare('DELETE FROM users WHERE id = ?').run(userId);
   },

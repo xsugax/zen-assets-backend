@@ -24,6 +24,10 @@ const bcrypt  = require('bcryptjs');
 const db      = require('../db/database');
 const { authenticate, requireAdmin } = require('../middleware/auth');
 const email   = require('../services/email');
+const {
+  VALID_TIERS, VALID_STATUSES, VALID_KYC,
+  isValidEmail, validatePassword,
+} = require('../utils/validators');
 
 // All admin routes require authentication + admin role
 router.use(authenticate, requireAdmin);
@@ -59,33 +63,70 @@ router.get('/users/:id', (req, res) => {
 // ── Admin Create User ───────────────────────────────────────
 router.post('/users', async (req, res) => {
   try {
-    const { email: rawEmail, fullName, password, pin, tier = 'gold', depositAmount = 0 } = req.body;
+    const {
+      email: rawEmail,
+      fullName,
+      password,
+      pin,
+      tier = 'gold',
+      status = 'active',
+      kycStatus = 'none',
+      depositAmount = 0,
+    } = req.body;
+
     if (!rawEmail || !fullName || !password) {
       return res.status(400).json({ error: 'Email, full name, and password are required' });
     }
+    if (!pin || !/^\d{4}$/.test(String(pin))) {
+      return res.status(400).json({ error: 'A 4-digit PIN is required (same as public registration)' });
+    }
+
     const userEmail = rawEmail.toLowerCase().trim();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userEmail)) {
-      return res.status(400).json({ error: 'Invalid email format' });
+    if (!isValidEmail(userEmail)) {
+      return res.status(400).json({ error: 'Please enter a valid email address' });
     }
-    if (password.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+
+    const pwdCheck = validatePassword(password);
+    if (!pwdCheck.ok) {
+      return res.status(400).json({ error: pwdCheck.error });
     }
+
+    const tierNorm = String(tier).toLowerCase();
+    if (!VALID_TIERS.includes(tierNorm)) {
+      return res.status(400).json({ error: `Invalid tier. Use: ${VALID_TIERS.join(', ')}` });
+    }
+
+    const statusNorm = String(status).toLowerCase();
+    if (!VALID_STATUSES.includes(statusNorm)) {
+      return res.status(400).json({ error: `Invalid status. Use: ${VALID_STATUSES.join(', ')}` });
+    }
+
+    const kycNorm = String(kycStatus).toLowerCase();
+    if (!VALID_KYC.includes(kycNorm)) {
+      return res.status(400).json({ error: `Invalid KYC status. Use: ${VALID_KYC.join(', ')}` });
+    }
+
     const existing = db.users.findByEmail(userEmail);
     if (existing) {
       return res.status(409).json({ error: 'An account with this email already exists' });
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
-    const userId = db.users.create({ email: userEmail, passwordHash, fullName, tier });
+    const userId = db.users.create({
+      email: userEmail,
+      passwordHash,
+      fullName: String(fullName).trim(),
+      tier: tierNorm,
+    });
 
-    // Set PIN if provided
-    if (pin && /^\d{4}$/.test(pin)) {
-      const pinHash = await bcrypt.hash(pin, 10);
-      db.users.setPin(userId, pinHash);
+    const pinHash = await bcrypt.hash(String(pin), 10);
+    db.users.setPin(userId, pinHash);
+
+    db.users.updateStatus(userId, statusNorm);
+    if (kycNorm !== 'none') {
+      db.users.updateKYC(userId, kycNorm);
     }
-
-    // Activate immediately (admin-created accounts skip email verification)
-    db.users.updateStatus(userId, 'active');
+    db.raw().prepare('UPDATE users SET email_verified = 1 WHERE id = ?').run(userId);
 
     // Create wallet with initial deposit
     const dep = parseFloat(depositAmount) || 0;
@@ -100,11 +141,17 @@ router.post('/users', async (req, res) => {
     }
 
     db.audit.log(req.user.id, 'admin.user_created', {
-      targetUser: userId, email: userEmail, tier, depositAmount: dep,
+      targetUser: userId, email: userEmail, tier: tierNorm, status: statusNorm,
+      kycStatus: kycNorm, depositAmount: dep,
     }, 'info', req.ip);
 
     const created = db.users.findById(userId);
     const wallet = db.wallets.findByUser(userId);
+
+    if (created) {
+      email.sendWelcome(created).catch(err => console.error('[ADMIN] Welcome email failed:', err.message));
+    }
+
     res.status(201).json({
       success: true,
       user: {
@@ -130,18 +177,23 @@ router.patch('/users/:id', (req, res) => {
   const user = db.users.findById(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  const { status, tier, kycStatus, balance, depositAmount } = req.body;
+  const { status, tier, kycStatus, balance, depositAmount, fullName } = req.body;
   const changes = [];
 
-  if (status && ['active', 'suspended', 'banned'].includes(status)) {
+  if (fullName && String(fullName).trim()) {
+    db.users.updateFullName(req.params.id, fullName);
+    changes.push(`name → ${String(fullName).trim()}`);
+  }
+
+  if (status && VALID_STATUSES.includes(status)) {
     db.users.updateStatus(req.params.id, status);
     changes.push(`status → ${status}`);
   }
-  if (tier && ['bronze', 'silver', 'gold', 'platinum', 'diamond'].includes(tier)) {
+  if (tier && VALID_TIERS.includes(tier)) {
     db.users.updateTier(req.params.id, tier);
     changes.push(`tier → ${tier}`);
   }
-  if (kycStatus && ['pending', 'submitted', 'verified', 'rejected'].includes(kycStatus)) {
+  if (kycStatus && VALID_KYC.includes(kycStatus) && kycStatus !== 'none') {
     db.users.updateKYC(req.params.id, kycStatus);
     changes.push(`KYC → ${kycStatus}`);
   }
