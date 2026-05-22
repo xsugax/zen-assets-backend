@@ -6,7 +6,14 @@
 const jwt  = require('jsonwebtoken');
 const db   = require('../db/database');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_change_me';
+const JWT_SECRET = process.env.JWT_SECRET || (
+  process.env.NODE_ENV === 'production' ? null : 'dev_only_jwt_secret_change_me'
+);
+
+if (!JWT_SECRET) {
+  console.error('[AUTH] FATAL: JWT_SECRET is required in production');
+  if (process.env.NODE_ENV === 'production') process.exit(1);
+}
 
 // ── Verify JWT Token ────────────────────────────────────────
 function authenticate(req, res, next) {

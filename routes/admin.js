@@ -351,6 +351,57 @@ router.post('/users/:id/debit', (req, res) => {
   }
 });
 
+// ── Pending Deposits ────────────────────────────────────────
+router.get('/deposits', (req, res) => {
+  const pending = db.transactions.listPending('deposit');
+  res.json({ deposits: pending });
+});
+
+router.post('/deposits/:id/approve', (req, res) => {
+  try {
+    const tx = db.transactions.findById(req.params.id);
+    if (!tx) return res.status(404).json({ error: 'Transaction not found' });
+    if (tx.type !== 'deposit') return res.status(400).json({ error: 'Not a deposit' });
+    if (tx.status !== 'pending') return res.status(400).json({ error: `Cannot approve: status is ${tx.status}` });
+
+    const amount = Math.abs(parseFloat(tx.amount) || 0);
+    const { before, after } = db.wallets.addDeposit(tx.user_id, amount);
+
+    db.transactions.updateStatus(req.params.id, 'completed', req.user.id);
+    db.raw().prepare('UPDATE transactions SET balance_before = ?, balance_after = ? WHERE id = ?')
+      .run(before, after, req.params.id);
+
+    db.audit.log(req.user.id, 'admin.deposit_approved', {
+      txId: req.params.id, userId: tx.user_id, amount,
+    }, 'info', req.ip);
+
+    const user = db.users.findById(tx.user_id);
+    if (user) email.sendDepositConfirm(user, amount, tx.method || 'manual').catch(() => {});
+
+    res.json({ success: true, message: 'Deposit approved and credited', balance: after });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post('/deposits/:id/reject', (req, res) => {
+  const { reason = '' } = req.body;
+  const tx = db.transactions.findById(req.params.id);
+  if (!tx) return res.status(404).json({ error: 'Transaction not found' });
+  if (tx.type !== 'deposit') return res.status(400).json({ error: 'Not a deposit' });
+  if (tx.status !== 'pending') return res.status(400).json({ error: `Cannot reject: status is ${tx.status}` });
+
+  db.transactions.updateStatus(req.params.id, 'rejected', req.user.id);
+  db.raw().prepare('UPDATE transactions SET notes = COALESCE(notes, \'\') || ? WHERE id = ?')
+    .run(` | Rejected: ${reason}`, req.params.id);
+
+  db.audit.log(req.user.id, 'admin.deposit_rejected', {
+    txId: req.params.id, userId: tx.user_id, reason,
+  }, 'warn', req.ip);
+
+  res.json({ success: true, message: 'Deposit rejected' });
+});
+
 // ── Pending Withdrawals ─────────────────────────────────────
 router.get('/withdrawals', (req, res) => {
   const pending = db.transactions.listPending('withdrawal');
@@ -365,15 +416,17 @@ router.post('/withdrawals/:id/approve', (req, res) => {
     if (tx.type !== 'withdrawal') return res.status(400).json({ error: 'Not a withdrawal' });
     if (tx.status !== 'pending') return res.status(400).json({ error: `Cannot approve: status is ${tx.status}` });
 
-    // Process the withdrawal (debit funds)
-    const { before, after } = db.wallets.processWithdrawal(tx.user_id, Math.abs(tx.amount));
+    // Funds were reserved when user submitted withdrawal — finalize only
+    const wallet = db.wallets.findByUser(tx.user_id);
+    const amount = Math.abs(tx.amount);
 
-    // Update transaction
     db.transactions.updateStatus(req.params.id, 'completed', req.user.id);
+    db.wallets.recordWithdrawalCompleted(tx.user_id, amount);
 
-    // Update balance snapshots
-    db.raw().prepare('UPDATE transactions SET balance_before = ?, balance_after = ? WHERE id = ?')
-      .run(before, after, req.params.id);
+    if (wallet) {
+      db.raw().prepare('UPDATE transactions SET balance_before = ?, balance_after = ? WHERE id = ?')
+        .run(wallet.balance + amount, wallet.balance, req.params.id);
+    }
 
     db.audit.log(req.user.id, 'admin.withdrawal_approved', {
       txId: req.params.id,
@@ -401,6 +454,17 @@ router.post('/withdrawals/:id/reject', (req, res) => {
 
   db.transactions.updateStatus(req.params.id, 'rejected', req.user.id);
 
+  // Refund reserved funds
+  try {
+    const refund = Math.abs(tx.amount);
+    const { before, after } = db.wallets.creditBalance(tx.user_id, refund);
+    db.raw().prepare('UPDATE transactions SET balance_after = ?, notes = COALESCE(notes, \'\') || ? WHERE id = ?')
+      .run(after, ` | Rejected: ${reason}`, req.params.id);
+    console.log(`[ADMIN] Withdrawal rejected — refunded $${refund} to ${tx.user_id} (${before} → ${after})`);
+  } catch (e) {
+    console.error('[ADMIN] Withdrawal refund failed:', e.message);
+  }
+
   db.audit.log(req.user.id, 'admin.withdrawal_rejected', {
     txId: req.params.id,
     userId: tx.user_id,
@@ -413,6 +477,35 @@ router.post('/withdrawals/:id/reject', (req, res) => {
   if (rejUser) email.sendWithdrawalUpdate(rejUser, Math.abs(tx.amount), 'rejected', reason).catch(() => {});
 
   res.json({ success: true, message: 'Withdrawal rejected' });
+});
+
+// ── Platform config ─────────────────────────────────────────
+router.get('/config', (req, res) => {
+  res.json({ config: db.platformSettings.get() });
+});
+
+router.patch('/config', (req, res) => {
+  const allowed = ['registration', 'trading', 'autoTrader', 'withdrawals', 'maintenance'];
+  const patch = {};
+  allowed.forEach((k) => {
+    if (typeof req.body[k] === 'boolean') patch[k] = req.body[k];
+  });
+  const config = db.platformSettings.set(patch);
+  db.audit.log(req.user.id, 'admin.config_updated', { patch }, 'info', req.ip);
+  res.json({ success: true, config });
+});
+
+// ── Broadcasts ──────────────────────────────────────────────
+router.get('/broadcasts', (req, res) => {
+  res.json(db.broadcasts.list({ page: parseInt(req.query.page, 10) || 1, limit: 20 }));
+});
+
+router.post('/broadcasts', (req, res) => {
+  const { subject, message, recipients = [] } = req.body;
+  if (!subject || !message) return res.status(400).json({ error: 'subject and message required' });
+  db.broadcasts.create(req.user.id, subject, message, recipients);
+  db.audit.log(req.user.id, 'admin.broadcast_sent', { subject, count: recipients.length }, 'info', req.ip);
+  res.json({ success: true, message: 'Broadcast queued' });
 });
 
 // ── Platform Statistics ─────────────────────────────────────

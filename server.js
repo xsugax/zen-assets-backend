@@ -109,7 +109,11 @@ app.use(cors({
 
 // ── Stripe webhook (raw body BEFORE json parser) ────────────
 const stripeRoutes = require('./routes/stripe');
-app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }), stripeRoutes);
+app.use(
+  '/api/stripe/webhook',
+  express.raw({ type: 'application/json' }),
+  stripeRoutes.webhookRouter || stripeRoutes
+);
 
 // ── Body Parsing ────────────────────────────────────────────
 app.use(express.json({ limit: '2mb' }));
@@ -158,6 +162,14 @@ app.get('/', (req, res) => {
   res.json({ name: 'ZEN ASSETS API', status: 'running', docs: '/api/health' });
 });
 
+app.get('/api/platform/config', (req, res) => {
+  try {
+    res.json({ config: db.platformSettings.get() });
+  } catch (e) {
+    res.json({ config: { registration: true, trading: true, withdrawals: true, maintenance: false } });
+  }
+});
+
 app.get('/api/health', (req, res) => {
   let dbOk = false;
   try {
@@ -166,10 +178,17 @@ app.get('/api/health', (req, res) => {
   } catch (e) {
     console.error('[HEALTH] DB check failed:', e.message);
   }
+  const stripeKey = process.env.STRIPE_SECRET_KEY || '';
+  const stripeEnabled = stripeKey && !stripeKey.includes('placeholder');
+  const emailEnabled = !!(process.env.RESEND_API_KEY || process.env.SMTP_HOST);
+  const cronEnabled = process.env.EARNINGS_CRON_ENABLED === 'true';
   const status = dbOk ? 'ok' : 'degraded';
   res.status(dbOk ? 200 : 503).json({
     status,
     db: dbOk ? 'connected' : 'error',
+    stripe: stripeEnabled ? 'configured' : 'disabled',
+    email: emailEnabled ? 'configured' : 'disabled',
+    earningsCron: cronEnabled ? 'enabled' : 'disabled',
     version: '1.0.0',
     uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
@@ -182,6 +201,7 @@ const adminRoutes  = require('./routes/admin');
 const walletRoutes = require('./routes/wallet');
 const tradesRoutes = require('./routes/trades');
 const kycRoutes    = require('./routes/kyc');
+const notifRoutes  = require('./routes/notifications');
 
 // Apply stricter rate limit to auth endpoints
 app.use('/api/auth/login', authLimiter);
@@ -196,6 +216,7 @@ app.use('/api/wallet', walletRoutes);
 app.use('/api/trades', tradesRoutes);
 app.use('/api/stripe', stripeRoutes);
 app.use('/api/kyc',    kycRoutes);
+app.use('/api/notifications', notifRoutes);
 
 // ── 404 Handler ─────────────────────────────────────────────
 app.use('/api/*', (req, res) => {
@@ -219,7 +240,7 @@ app.use((err, req, res, next) => {
 });
 
 // ── Start ───────────────────────────────────────────────────
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`
 ╔══════════════════════════════════════════════════════╗
 ║  ZEN ASSETS Backend Server                           ║
@@ -229,5 +250,21 @@ app.listen(PORT, () => {
 ╚══════════════════════════════════════════════════════╝
   `);
 });
+
+function shutdown(signal) {
+  console.log(`[SERVER] ${signal} received — shutting down`);
+  server.close(() => {
+    try {
+      const raw = db.raw();
+      if (raw) raw.pragma('wal_checkpoint(TRUNCATE)');
+    } catch (e) {
+      console.warn('[SERVER] WAL checkpoint failed:', e.message);
+    }
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(1), 10000);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 module.exports = app;

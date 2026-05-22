@@ -36,9 +36,14 @@ function securityMiddleware(req, res, next) {
     }
   });
 
-  // ── Sanitize body
+  // ── Sanitize body (skip credentials — quotes are valid in passwords)
+  const SKIP_SANITIZE_KEYS = new Set([
+    'password', 'newPassword', 'currentPassword', 'oldPassword', 'pin',
+    'doc_front', 'doc_back', 'selfie',
+  ]);
   if (req.body && typeof req.body === 'object') {
     Object.keys(req.body).forEach(key => {
+      if (SKIP_SANITIZE_KEYS.has(key)) return;
       if (typeof req.body[key] === 'string') {
         req.body[key] = sanitizeInput(req.body[key]);
       }

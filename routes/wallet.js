@@ -14,6 +14,11 @@ const router  = express.Router();
 const db      = require('../db/database');
 const { authenticate } = require('../middleware/auth');
 const email   = require('../services/email');
+const {
+  assertTradingAllowed,
+  assertProfitsAllowed,
+  assertWithdrawalsAllowed,
+} = require('../utils/user-controls');
 
 // All wallet routes require authentication
 router.use(authenticate);
@@ -98,6 +103,7 @@ router.post('/deposit', (req, res) => {
 // ── Request Withdrawal ──────────────────────────────────────
 router.post('/withdraw', (req, res) => {
   try {
+    assertWithdrawalsAllowed();
     const { amount, method, address = '', notes = '' } = req.body;
 
     if (!amount || amount <= 0) {
@@ -134,14 +140,18 @@ router.post('/withdraw', (req, res) => {
       });
     }
 
+    const withdrawAmount = Math.abs(parseFloat(amount));
+    const { before, after } = db.wallets.debitBalance(req.user.id, withdrawAmount);
+
     const txId = db.transactions.create({
       userId: req.user.id,
       type: 'withdrawal',
-      amount: -Math.abs(amount),
+      amount: -withdrawAmount,
       status: 'pending',
       method,
       reference: address,
-      balanceBefore: wallet.balance,
+      balanceBefore: before,
+      balanceAfter: after,
       notes: notes || `Withdrawal to ${method}: ${address || 'N/A'}`,
     });
 
@@ -161,6 +171,9 @@ router.post('/withdraw', (req, res) => {
       estimatedTime: getProcessingTime(method),
     });
   } catch (err) {
+    if (err.status === 403 || err.status === 503) {
+      return res.status(err.status).json({ error: err.message, code: err.code });
+    }
     console.error('Withdrawal error:', err);
     res.status(500).json({ error: 'Failed to process withdrawal request' });
   }
@@ -169,6 +182,7 @@ router.post('/withdraw', (req, res) => {
 // ── Claim Pending Earnings ──────────────────────────────────
 router.post('/claim', (req, res) => {
   try {
+    assertProfitsAllowed(req.user);
     const { amount, pool = 'all' } = req.body;
     if (!amount || amount <= 0) {
       return res.status(400).json({ error: 'Nothing to claim' });
@@ -216,6 +230,7 @@ router.post('/claim', (req, res) => {
       pendingEarnings: Math.max(0, pending - claimAmount),
     });
   } catch (err) {
+    if (err.status === 403) return res.status(403).json({ error: err.message, code: err.code });
     console.error('Claim error:', err);
     res.status(500).json({ error: 'Failed to process claim' });
   }

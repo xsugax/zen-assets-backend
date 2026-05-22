@@ -73,10 +73,14 @@ function validatePassword(pwd) {
 }
 
 
+const { assertRegistrationAllowed } = require('../utils/user-controls');
+
 // ── Register ────────────────────────────────────────────────
 router.post('/register', async (req, res) => {
   try {
-    const { email: rawEmail, password, fullName, tier = 'gold', depositAmount = 0, pin } = req.body;
+    assertRegistrationAllowed();
+    const { email: rawEmail, password, fullName, tier = 'gold', pin } = req.body;
+    const depositAmount = 0; // Public registration cannot self-fund — use deposits or admin
     const email = (rawEmail || '').trim().toLowerCase();
 
     // Validation
@@ -108,8 +112,14 @@ router.post('/register', async (req, res) => {
     // Hash password with bcrypt (cost factor 12)
     const passwordHash = await bcrypt.hash(password, 12);
 
+    const { VALID_TIERS } = require('../utils/validators');
+    const tierNorm = String(tier).toLowerCase();
+    if (!VALID_TIERS.includes(tierNorm)) {
+      return res.status(400).json({ error: `Invalid tier. Choose: ${VALID_TIERS.join(', ')}` });
+    }
+
     // Create user
-    const userId = db.users.create({ email, passwordHash, fullName, tier });
+    const userId = db.users.create({ email, passwordHash, fullName, tier: tierNorm });
 
     // Set PIN (hashed)
     const pinHash = await bcrypt.hash(pin, 10);
@@ -155,6 +165,7 @@ router.post('/register', async (req, res) => {
       wallet: wallet ? { balance: wallet.balance, initialDeposit: wallet.initial_deposit, totalDeposited: wallet.total_deposited, totalWithdrawn: wallet.total_withdrawn, totalEarned: wallet.total_earned } : null,
     });
   } catch (err) {
+    if (err.status === 503) return res.status(503).json({ error: err.message, code: err.code });
     console.error('Register error:', err);
     res.status(500).json({ error: 'Registration failed. Please try again.' });
   }

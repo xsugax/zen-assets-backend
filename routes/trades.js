@@ -13,10 +13,12 @@ const express = require('express');
 const router  = express.Router();
 const { authenticate } = require('../middleware/auth');
 const db      = require('../db/database');
+const { assertTradingAllowed } = require('../utils/user-controls');
 
 // ── POST /api/trades — save a trade ────────────────────────
 router.post('/', authenticate, (req, res) => {
   try {
+    assertTradingAllowed(req.user);
     const {
       symbol, side, order_type, quantity,
       entry_price, exit_price, pnl, fee,
@@ -89,6 +91,7 @@ router.post('/', authenticate, (req, res) => {
 
     res.status(201).json({ id, message: 'Trade saved' });
   } catch (err) {
+    if (err.status === 403) return res.status(403).json({ error: err.message, code: err.code });
     console.error('POST /api/trades error:', err);
     res.status(500).json({ error: 'Failed to save trade' });
   }
@@ -136,6 +139,7 @@ router.get('/', authenticate, (req, res) => {
 // ── PATCH /api/trades/:id/close — close open trade ─────────
 router.patch('/:id/close', authenticate, (req, res) => {
   try {
+    assertTradingAllowed(req.user);
     const trade = db.raw().prepare(
       'SELECT * FROM trades WHERE id = ? AND user_id = ?'
     ).get(req.params.id, req.user.id);

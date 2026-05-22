@@ -14,6 +14,19 @@ const { v4: uuid } = require('uuid');
 const { authenticate } = require('../middleware/auth');
 const db      = require('../db/database');
 const email   = require('../services/email');
+const cryptoSvc = require('../services/crypto');
+
+function sealBlob(b64) {
+  if (!b64) return null;
+  const enc = cryptoSvc.encrypt(b64);
+  return enc || b64;
+}
+
+function unsealBlob(stored) {
+  if (!stored) return null;
+  const dec = cryptoSvc.decrypt(stored);
+  return dec || stored;
+}
 
 // ── POST /api/kyc/submit — upload KYC documents ────────────
 router.post('/submit', authenticate, (req, res) => {
@@ -51,7 +64,7 @@ router.post('/submit', authenticate, (req, res) => {
         id, user_id, doc_type, doc_front, doc_back, selfie,
         full_name, date_of_birth, country, status
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
-    `).run(id, userId, doc_type, doc_front, doc_back || null, selfie || null,
+    `).run(id, userId, doc_type, sealBlob(doc_front), sealBlob(doc_back), sealBlob(selfie),
            full_name || user.full_name, date_of_birth || null, country || user.country);
 
     // Update user kyc_status to submitted
@@ -77,10 +90,10 @@ router.get('/status', authenticate, (req, res) => {
 
     const rawDb = db.raw();
     const doc = rawDb.prepare(`
-      SELECT id, doc_type, status, submitted_at, reviewed_at, reviewer_notes
+      SELECT id, doc_type, status, created_at as submitted_at, reviewed_at, review_notes as reviewer_notes
       FROM kyc_documents
       WHERE user_id = ?
-      ORDER BY submitted_at DESC
+      ORDER BY created_at DESC
       LIMIT 1
     `).get(req.user.id);
 
@@ -102,12 +115,12 @@ router.get('/pending', authenticate, (req, res) => {
     const rawDb = db.raw();
     const pending = rawDb.prepare(`
       SELECT k.id, k.user_id, k.doc_type, k.full_name, k.date_of_birth,
-             k.country, k.status, k.submitted_at,
+             k.country, k.status, k.created_at as submitted_at,
              u.email, u.kyc_status
       FROM kyc_documents k
       JOIN users u ON u.id = k.user_id
       WHERE k.status = 'pending'
-      ORDER BY k.submitted_at ASC
+      ORDER BY k.created_at ASC
     `).all();
 
     res.json({ pending, count: pending.length });
@@ -132,7 +145,12 @@ router.get('/:id', authenticate, (req, res) => {
 
     if (!doc) return res.status(404).json({ error: 'KYC submission not found' });
 
-    res.json(doc);
+    res.json({
+      ...doc,
+      doc_front: unsealBlob(doc.doc_front),
+      doc_back: unsealBlob(doc.doc_back),
+      selfie: unsealBlob(doc.selfie),
+    });
   } catch (err) {
     console.error('GET /api/kyc/:id error:', err);
     res.status(500).json({ error: 'Failed to fetch KYC document' });
@@ -157,7 +175,7 @@ router.patch('/:id/review', authenticate, (req, res) => {
     // Update KYC document status
     rawDb.prepare(`
       UPDATE kyc_documents
-      SET status = ?, reviewer_id = ?, reviewer_notes = ?, reviewed_at = datetime('now')
+      SET status = ?, reviewed_by = ?, review_notes = ?, reviewed_at = datetime('now')
       WHERE id = ?
     `).run(decision, req.user.id, notes || null, doc.id);
 

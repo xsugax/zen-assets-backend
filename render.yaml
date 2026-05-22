@@ -27,9 +27,26 @@ services:
       - key: FRONTEND_URL
         value: https://zenassets.tech
       - key: DB_PATH
-        value: ./data/zen_assets.db
-      # Attach a Render persistent disk at /data and set DB_PATH=/data/zen_assets.db for production retention
+        value: /data/zen_assets.db
+      - key: EARNINGS_CRON_ENABLED
+        value: "true"
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_PUBLISHABLE_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SMTP_HOST
+        sync: false
       - key: LOGIN_RATE_LIMIT
         value: 10
       - key: LOGIN_RATE_WINDOW
         value: 15
+      - key: DATA_ENCRYPTION_KEY
+        sync: false
+    disk:
+      name: zen-assets-db
+      mountPath: /data
+      sizeGB: 1

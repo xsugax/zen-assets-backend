@@ -54,8 +54,11 @@ async function runDailyEarnings() {
 
       if (earning < 0.01) { skipped++; continue; }
 
-      // Credit wallet
-      const { after: newBalance } = db.wallets.creditBalance(user.id, earning);
+      // Accrue to pending pool — user claims via /api/wallet/claim
+      db.wallets.addPendingEarnings(user.id, earning);
+      const walletAfter = db.wallets.findByUser(user.id);
+      const newBalance = walletAfter ? walletAfter.balance : user.balance;
+      const newPending = walletAfter ? walletAfter.pending_earnings : earning;
 
       // Record transaction
       db.transactions.create({
@@ -67,7 +70,7 @@ async function runDailyEarnings() {
         reference:     `daily-${new Date().toISOString().slice(0, 10)}`,
         balanceBefore: user.balance,
         balanceAfter:  newBalance,
-        notes:         `Daily earnings (${user.tier} tier, ${(rate * 100).toFixed(4)}% daily)`,
+        notes:         `Daily earnings → pending ($${newPending.toFixed(2)} pending, ${user.tier} tier)`,
       });
 
       // Log audit
@@ -114,7 +117,9 @@ async function runWeeklyBonus() {
       const bonus = parseFloat((row.week_total * 0.02).toFixed(2));
       if (bonus < 0.01) continue;
 
-      const { after: newBalance } = db.wallets.creditBalance(row.user_id, bonus);
+      db.wallets.addPendingEarnings(row.user_id, bonus);
+      const w = db.wallets.findByUser(row.user_id);
+      const newBalance = w ? w.balance : row.balance;
 
       db.transactions.create({
         userId:        row.user_id,

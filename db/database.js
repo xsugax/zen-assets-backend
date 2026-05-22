@@ -54,12 +54,18 @@ function seedAdmin() {
     console.log(`[DB] Admin account created: ${email}`);
     return;
   }
-  db.prepare(`
-    UPDATE users SET password_hash = ?, full_name = ?, role = 'admin', status = 'active', email_verified = 1
-    WHERE email = ?
-  `).run(hash, fullName, email);
+  if (process.env.SYNC_ADMIN_PASSWORD === 'true') {
+    db.prepare(`
+      UPDATE users SET password_hash = ?, full_name = ?, role = 'admin', status = 'active', email_verified = 1
+      WHERE email = ?
+    `).run(hash, fullName, email);
+    console.log(`[DB] Admin password synced (SYNC_ADMIN_PASSWORD): ${email}`);
+  } else {
+    db.prepare(`
+      UPDATE users SET full_name = ?, role = 'admin', status = 'active', email_verified = 1 WHERE email = ?
+    `).run(fullName, email);
+  }
   if (!wallets.findByUser(existing.id)) wallets.create(existing.id, 0);
-  console.log(`[DB] Admin account synced: ${email}`);
 }
 
 function migrateSchema() {
@@ -230,6 +236,14 @@ function createTables() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       reviewed_at DATETIME,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS platform_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
@@ -507,6 +521,31 @@ const wallets = {
   processWithdrawal(userId, amount) {
     return wallets.debitBalance(userId, amount);
   },
+  addPendingEarnings(userId, amount) {
+    const wallet = wallets.findByUser(userId);
+    const dep = parseFloat(amount) || 0;
+    if (!wallet) {
+      wallets.create(userId, 0);
+    }
+    db.prepare(`
+      UPDATE wallets SET
+        pending_earnings = pending_earnings + ?,
+        total_earned = total_earned + ?,
+        updated_at = datetime('now')
+      WHERE user_id = ?
+    `).run(dep, dep, userId);
+    const w = wallets.findByUser(userId);
+    return { pendingEarnings: w.pending_earnings };
+  },
+  recordWithdrawalCompleted(userId, amount) {
+    const abs = Math.abs(parseFloat(amount) || 0);
+    db.prepare(`
+      UPDATE wallets SET
+        total_withdrawn = total_withdrawn + ?,
+        updated_at = datetime('now')
+      WHERE user_id = ?
+    `).run(abs, userId);
+  },
 };
 
 // ── Transactions ──────────────────────────────────────────────
@@ -628,6 +667,51 @@ const broadcasts = {
     `).all(limit, (page - 1) * limit);
     return { broadcasts: rows };
   },
+  listForUser(email, limit = 30) {
+    const rows = db.prepare(`
+      SELECT id, subject, message, recipient_emails, created_at FROM broadcasts ORDER BY created_at DESC LIMIT 100
+    `).all();
+    const norm = (email || '').trim().toLowerCase();
+    return rows.filter((b) => {
+      try {
+        const list = JSON.parse(b.recipient_emails || '[]');
+        if (!Array.isArray(list) || list.length === 0) return true;
+        return list.some((e) => String(e).toLowerCase() === norm);
+      } catch {
+        return true;
+      }
+    }).slice(0, limit);
+  },
+};
+
+const DEFAULT_PLATFORM_CONFIG = {
+  registration: true,
+  trading: true,
+  autoTrader: true,
+  withdrawals: true,
+  maintenance: false,
+};
+
+const platformSettings = {
+  get() {
+    const out = { ...DEFAULT_PLATFORM_CONFIG };
+    try {
+      const rows = db.prepare('SELECT key, value FROM platform_settings').all();
+      rows.forEach((r) => {
+        try { out[r.key] = JSON.parse(r.value); } catch { out[r.key] = r.value; }
+      });
+    } catch { /* table may not exist yet */ }
+    return out;
+  },
+  set(patch) {
+    Object.entries(patch).forEach(([key, val]) => {
+      db.prepare(`
+        INSERT INTO platform_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+      `).run(key, JSON.stringify(val));
+    });
+    return platformSettings.get();
+  },
 };
 
 module.exports = {
@@ -642,4 +726,5 @@ module.exports = {
   trades,
   audit,
   broadcasts,
+  platformSettings,
 };
