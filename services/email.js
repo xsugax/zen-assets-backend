@@ -158,7 +158,7 @@ async function sendWelcome(user) {
   });
 }
 
-// Deposit confirmed (after Stripe webhook / admin credit)
+// Deposit confirmed (after admin approval / credit)
 async function sendDepositConfirm(user, amount, method = 'Card') {
   return send({
     to: user.email,
