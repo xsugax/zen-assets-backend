@@ -107,14 +107,6 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// ── Stripe webhook (raw body BEFORE json parser) ────────────
-const stripeRoutes = require('./routes/stripe');
-app.use(
-  '/api/stripe/webhook',
-  express.raw({ type: 'application/json' }),
-  stripeRoutes.webhookRouter || stripeRoutes
-);
-
 // ── Body Parsing ────────────────────────────────────────────
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -178,15 +170,12 @@ app.get('/api/health', (req, res) => {
   } catch (e) {
     console.error('[HEALTH] DB check failed:', e.message);
   }
-  const stripeKey = process.env.STRIPE_SECRET_KEY || '';
-  const stripeEnabled = stripeKey && !stripeKey.includes('placeholder');
   const emailEnabled = !!(process.env.RESEND_API_KEY || process.env.SMTP_HOST);
   const cronEnabled = process.env.EARNINGS_CRON_ENABLED === 'true';
   const status = dbOk ? 'ok' : 'degraded';
   res.status(dbOk ? 200 : 503).json({
     status,
     db: dbOk ? 'connected' : 'error',
-    stripe: stripeEnabled ? 'configured' : 'disabled',
     email: emailEnabled ? 'configured' : 'disabled',
     earningsCron: cronEnabled ? 'enabled' : 'disabled',
     version: '1.0.0',
@@ -214,7 +203,6 @@ app.use('/api/auth',   authRoutes);
 app.use('/api/admin',  adminRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/trades', tradesRoutes);
-app.use('/api/stripe', stripeRoutes);
 app.use('/api/kyc',    kycRoutes);
 app.use('/api/notifications', notifRoutes);
 

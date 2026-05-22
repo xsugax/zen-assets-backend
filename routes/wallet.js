@@ -64,7 +64,7 @@ router.post('/deposit', (req, res) => {
 
     const validMethods = [
       'crypto_btc', 'crypto_eth', 'crypto_usdt', 'crypto_usdc', 'crypto_sol',
-      'card', 'paypal', 'skrill', 'neteller', 'bank_transfer',
+      'paypal', 'skrill', 'neteller', 'bank_transfer',
     ];
     if (!validMethods.includes(method)) {
       return res.status(400).json({ error: 'Invalid payment method' });
@@ -244,7 +244,6 @@ function getDepositInstructions(method) {
     crypto_usdt: { network: 'Solana SPL', confirmations: 1, minAmount: 10 },
     crypto_usdc: { network: 'Ethereum (ERC-20)', confirmations: 12, minAmount: 10 },
     crypto_sol:  { network: 'Solana', confirmations: 1, minAmount: 0.1 },
-    card:        { processor: 'Stripe', minAmount: 10, maxAmount: 50000, fee: '2.9% + $0.30' },
     paypal:      { minAmount: 10, fee: '3.49% + $0.49' },
     bank_transfer: { minAmount: 100, processingDays: '1-3 business days' },
   };
@@ -258,7 +257,6 @@ function getProcessingTime(method) {
     crypto_usdt: '5-15 minutes',
     crypto_usdc: '5-15 minutes',
     crypto_sol: '1-5 minutes',
-    card: '1-3 business days',
     paypal: '1-2 business days',
     bank_transfer: '3-5 business days',
   };

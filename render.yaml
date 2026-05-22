@@ -30,12 +30,6 @@ services:
         value: /data/zen_assets.db
       - key: EARNINGS_CRON_ENABLED
         value: "true"
-      - key: STRIPE_SECRET_KEY
-        sync: false
-      - key: STRIPE_PUBLISHABLE_KEY
-        sync: false
-      - key: STRIPE_WEBHOOK_SECRET
-        sync: false
       - key: RESEND_API_KEY
         sync: false
       - key: SMTP_HOST
