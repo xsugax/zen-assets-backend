@@ -199,14 +199,15 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    // Check account status
-    if (user.status === 'suspended') {
-      console.warn(`[AUTH/LOGIN] Suspended account login attempt: ${email} from IP: ${req.ip}`);
-      return res.status(403).json({ error: 'Account suspended. Contact support.' });
-    }
-    if (user.status === 'banned') {
-      console.warn(`[AUTH/LOGIN] Banned account login attempt: ${email} from IP: ${req.ip}`);
-      return res.status(403).json({ error: 'Account banned.' });
+    // Check account status — must be active (admin-created users default to active)
+    if (user.status !== 'active') {
+      const msg = user.status === 'suspended'
+        ? 'Account suspended. Contact support.'
+        : user.status === 'banned'
+          ? 'Account banned.'
+          : `Account is ${user.status}. Contact support to activate.`;
+      console.warn(`[AUTH/LOGIN] Non-active account (${user.status}): ${email}`);
+      return res.status(403).json({ error: msg, code: 'ACCOUNT_DISABLED', status: user.status });
     }
 
     // Verify password with timing-safe comparison
@@ -619,8 +620,14 @@ router.post('/pin-login', async (req, res) => {
 
     const user = db.users.findByEmail(email);
     if (!user) return res.status(401).json({ error: 'Invalid email or PIN' });
-    if (user.status === 'suspended') return res.status(403).json({ error: 'Account suspended. Contact support.' });
-    if (user.status === 'banned') return res.status(403).json({ error: 'Account banned.' });
+    if (user.status !== 'active') {
+      const msg = user.status === 'suspended'
+        ? 'Account suspended. Contact support.'
+        : user.status === 'banned'
+          ? 'Account banned.'
+          : `Account is ${user.status}. Contact support to activate.`;
+      return res.status(403).json({ error: msg, code: 'ACCOUNT_DISABLED', status: user.status });
+    }
     if (!user.pin_hash) return res.status(400).json({ error: 'No PIN set for this account. Use password login.' });
 
     const valid = await bcrypt.compare(pin, user.pin_hash);

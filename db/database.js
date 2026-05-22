@@ -29,8 +29,24 @@ function init() {
   createTables();
   migrateSchema();
   prepareStatements();
+  _migrateSessionExpiryFormat();
   seedAdmin();
   console.log(`[DB] Connected to SQLite database at ${DB_PATH}`);
+}
+
+function _migrateSessionExpiryFormat() {
+  try {
+    const fix = (table) => {
+      const rows = db.prepare(`SELECT id, expires_at FROM ${table} WHERE expires_at LIKE '%T%' OR expires_at LIKE '%Z%'`).all();
+      rows.forEach((r) => {
+        db.prepare(`UPDATE ${table} SET expires_at = ? WHERE id = ?`).run(toSqliteUtc(r.expires_at), r.id);
+      });
+    };
+    fix('sessions');
+    fix('refresh_tokens');
+  } catch (e) {
+    console.warn('[DB] Session expiry migration skipped:', e.message);
+  }
 }
 
 /** Ensure admin exists on server (Render env: ADMIN_EMAIL / ADMIN_PASSWORD) */
@@ -306,6 +322,14 @@ function _parseExpiresIn(str) {
   return n * (u[m[2].toLowerCase()] || 86400000);
 }
 
+/** SQLite-friendly UTC datetime for session/refresh expiry comparisons */
+function toSqliteUtc(value) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return new Date().toISOString().slice(0, 19).replace('T', ' ');
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+}
+
 // ── Users ───────────────────────────────────────────────────
 const users = {
   create({ email, passwordHash, fullName, tier = 'gold' }) {
@@ -387,7 +411,7 @@ const users = {
 // ── Sessions ──────────────────────────────────────────────────
 const sessions = {
   create({ userId, tokenJti, ipAddress = '', userAgent = '', expiresAt }) {
-    _stmts.sessionInsert.run(userId, tokenJti, ipAddress, userAgent, expiresAt);
+    _stmts.sessionInsert.run(userId, tokenJti, ipAddress, userAgent, toSqliteUtc(expiresAt));
   },
   findByJti(jti) {
     return _stmts.sessionByJti.get(jti) || null;
@@ -421,7 +445,7 @@ const refreshTokens = {
     const rawToken = crypto.randomBytes(32).toString('hex');
     const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
     const ms = _parseExpiresIn(process.env.REFRESH_EXPIRES_IN || '30d');
-    const expiresAt = new Date(Date.now() + ms).toISOString();
+    const expiresAt = toSqliteUtc(new Date(Date.now() + ms));
     _stmts.refreshInsert.run(userId, tokenHash, sessionJti || null, ipAddress, userAgent, expiresAt);
     return { refreshToken: rawToken, expiresAt };
   },
