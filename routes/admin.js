@@ -28,6 +28,9 @@ const {
   VALID_TIERS, VALID_STATUSES, VALID_KYC,
   isValidEmail, validatePassword,
 } = require('../utils/validators');
+const {
+  mergeSettings, normalizeCopyTrade, attachSettingsToUser,
+} = require('../utils/user-settings');
 
 // All admin routes require authentication + admin role
 router.use(authenticate, requireAdmin);
@@ -38,6 +41,7 @@ router.get('/users', (req, res) => {
   const result = db.users.list({
     page: parseInt(page), limit: parseInt(limit), search, status, tier,
   });
+  result.users = result.users.map(attachSettingsToUser);
   res.json(result);
 });
 
@@ -52,7 +56,7 @@ router.get('/users/:id', (req, res) => {
   const recentTrades = db.trades.listByUser(req.params.id, { limit: 10 });
 
   res.json({
-    user,
+    user: attachSettingsToUser(user),
     wallet: wallet || {},
     trading: tradeStats || {},
     recentTransactions: recentTx.transactions,
@@ -72,6 +76,7 @@ router.post('/users', async (req, res) => {
       status = 'active',
       kycStatus = 'none',
       depositAmount = 0,
+      copyTrade,
     } = req.body;
 
     if (!rawEmail || !fullName || !password) {
@@ -128,6 +133,9 @@ router.post('/users', async (req, res) => {
     }
     db.raw().prepare('UPDATE users SET email_verified = 1 WHERE id = ?').run(userId);
 
+    const initialSettings = mergeSettings('{}', { copyTrade });
+    db.users.updateSettings(userId, initialSettings);
+
     // Create wallet with initial deposit
     const dep = parseFloat(depositAmount) || 0;
     db.wallets.create(userId, dep);
@@ -152,17 +160,19 @@ router.post('/users', async (req, res) => {
       email.sendWelcome(created).catch(err => console.error('[ADMIN] Welcome email failed:', err.message));
     }
 
+    const userOut = attachSettingsToUser(created);
     res.status(201).json({
       success: true,
       user: {
-        id: created.id,
-        email: created.email,
-        fullName: created.full_name,
-        role: created.role,
-        tier: created.tier,
-        status: created.status,
-        kycStatus: created.kyc_status,
-        createdAt: created.created_at,
+        id: userOut.id,
+        email: userOut.email,
+        fullName: userOut.full_name,
+        role: userOut.role,
+        tier: userOut.tier,
+        status: userOut.status,
+        kycStatus: userOut.kyc_status,
+        createdAt: userOut.created_at,
+        copyTrade: userOut.copyTrade,
       },
       wallet,
     });
@@ -177,8 +187,26 @@ router.patch('/users/:id', (req, res) => {
   const user = db.users.findById(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  const { status, tier, kycStatus, balance, depositAmount, fullName } = req.body;
+  const {
+    status, tier, kycStatus, balance, depositAmount, fullName,
+    copyTrade, tradingPaused, profitPaused,
+  } = req.body;
   const changes = [];
+
+  if (copyTrade != null || tradingPaused != null || profitPaused != null) {
+    const merged = mergeSettings(user.settings_json, {
+      copyTrade,
+      tradingPaused,
+      profitPaused,
+    });
+    db.users.updateSettings(req.params.id, merged);
+    if (copyTrade != null) {
+      const ct = normalizeCopyTrade(copyTrade);
+      changes.push(`copy → ${ct.mode} @ ${ct.percent}%`);
+    }
+    if (tradingPaused != null) changes.push(`tradingPaused → ${!!tradingPaused}`);
+    if (profitPaused != null) changes.push(`profitPaused → ${!!profitPaused}`);
+  }
 
   if (fullName && String(fullName).trim()) {
     db.users.updateFullName(req.params.id, fullName);
@@ -222,9 +250,15 @@ router.patch('/users/:id', (req, res) => {
     }, 'info', req.ip);
   }
 
-  const updated = db.users.findById(req.params.id);
+  const updated = attachSettingsToUser(db.users.findById(req.params.id));
   const wallet = db.wallets.findByUser(req.params.id);
-  res.json({ success: true, user: updated, wallet, changes });
+  res.json({
+    success: true,
+    user: updated,
+    wallet,
+    changes,
+    copyTrade: updated?.copyTrade,
+  });
 });
 
 // ── Delete User ─────────────────────────────────────────────

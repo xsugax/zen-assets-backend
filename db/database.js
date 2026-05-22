@@ -27,6 +27,7 @@ function init() {
   db.pragma('synchronous = NORMAL');
   db.pragma('foreign_keys = ON');
   createTables();
+  migrateSchema();
   prepareStatements();
   seedAdmin();
   console.log(`[DB] Connected to SQLite database at ${DB_PATH}`);
@@ -61,6 +62,14 @@ function seedAdmin() {
   console.log(`[DB] Admin account synced: ${email}`);
 }
 
+function migrateSchema() {
+  const cols = db.prepare('PRAGMA table_info(users)').all();
+  if (!cols.some(c => c.name === 'settings_json')) {
+    db.exec(`ALTER TABLE users ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'`);
+    console.log('[DB] Added users.settings_json column');
+  }
+}
+
 function createTables() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -75,6 +84,7 @@ function createTables() {
       email_verified INTEGER DEFAULT 0,
       pin_hash TEXT,
       last_login TEXT,
+      settings_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -315,6 +325,19 @@ const users = {
     if (!name) return;
     db.prepare('UPDATE users SET full_name = ? WHERE id = ?').run(name, userId);
   },
+  getSettings(userId) {
+    const row = db.prepare('SELECT settings_json FROM users WHERE id = ?').get(userId);
+    if (!row) return {};
+    try {
+      return JSON.parse(row.settings_json || '{}');
+    } catch {
+      return {};
+    }
+  },
+  updateSettings(userId, settingsObj) {
+    const json = JSON.stringify(settingsObj || {});
+    db.prepare('UPDATE users SET settings_json = ? WHERE id = ?').run(json, userId);
+  },
   delete(userId) {
     db.prepare('DELETE FROM users WHERE id = ?').run(userId);
   },
@@ -324,7 +347,7 @@ const users = {
   list({ page = 1, limit = 20, search = '', status = '', tier = '' } = {}) {
     let sql = `
       SELECT u.id, u.email, u.full_name, u.role, u.tier, u.status, u.kyc_status,
-             u.email_verified, u.last_login, u.created_at,
+             u.email_verified, u.last_login, u.created_at, u.settings_json,
              COALESCE(w.balance, 0) AS balance,
              COALESCE(w.total_deposited, 0) AS total_deposited
       FROM users u

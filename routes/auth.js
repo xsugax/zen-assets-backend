@@ -16,6 +16,23 @@ const db         = require('../db/database');
 const { authenticate, issueAuthCredentials } = require('../middleware/auth');
 const emailService = require('../services/email');
 const otpService = require('../services/otp');
+const { attachSettingsToUser } = require('../utils/user-settings');
+
+function clientUser(row) {
+  const u = attachSettingsToUser(row);
+  return {
+    id: u.id,
+    email: u.email,
+    fullName: u.full_name,
+    role: u.role,
+    tier: u.tier,
+    status: u.status,
+    kycStatus: u.kyc_status,
+    copyTrade: u.copyTrade,
+    tradingPaused: u.tradingPaused,
+    profitPaused: u.profitPaused,
+  };
+}
 
 // ── Email Format Validator (real-world domains only) ────────
 function isValidEmail(addr) {
@@ -209,7 +226,7 @@ router.post('/login', async (req, res) => {
       token: creds.token,
       refreshToken: creds.refreshToken,
       expiresIn: creds.expiresIn,
-      user: { id: user.id, email: user.email, fullName: user.full_name, role: user.role, tier: user.tier, status: user.status, kycStatus: user.kyc_status },
+      user: clientUser(user),
       wallet: wallet ? { balance: wallet.balance, initialDeposit: wallet.initial_deposit, totalDeposited: wallet.total_deposited, totalWithdrawn: wallet.total_withdrawn, totalEarned: wallet.total_earned } : null,
     });
   } catch (err) {
@@ -274,17 +291,21 @@ router.get('/me', authenticate, (req, res) => {
     tradeStats = db.trades.stats(req.user.id) || {};
   } catch (_) { /* trades optional */ }
 
+  const userWithSettings = attachSettingsToUser(req.user);
   res.json({
     user: {
-      id: req.user.id,
-      email: req.user.email,
-      fullName: req.user.full_name,
-      role: req.user.role,
-      tier: req.user.tier,
-      status: req.user.status,
-      kycStatus: req.user.kyc_status,
-      createdAt: req.user.created_at,
-      lastLogin: req.user.last_login,
+      id: userWithSettings.id,
+      email: userWithSettings.email,
+      fullName: userWithSettings.full_name,
+      role: userWithSettings.role,
+      tier: userWithSettings.tier,
+      status: userWithSettings.status,
+      kycStatus: userWithSettings.kyc_status,
+      createdAt: userWithSettings.created_at,
+      lastLogin: userWithSettings.last_login,
+      copyTrade: userWithSettings.copyTrade,
+      tradingPaused: userWithSettings.tradingPaused,
+      profitPaused: userWithSettings.profitPaused,
     },
     wallet: wallet ? {
       balance: wallet.balance,
@@ -578,7 +599,7 @@ router.post('/pin-login', async (req, res) => {
       token: creds.token,
       refreshToken: creds.refreshToken,
       expiresIn: creds.expiresIn,
-      user: { id: user.id, email: user.email, fullName: user.full_name, role: user.role, tier: user.tier, status: user.status, kycStatus: user.kyc_status },
+      user: clientUser(user),
       wallet: wallet ? { balance: wallet.balance, initialDeposit: wallet.initial_deposit, totalDeposited: wallet.total_deposited, totalWithdrawn: wallet.total_withdrawn, totalEarned: wallet.total_earned } : null,
     });
   } catch (err) {
