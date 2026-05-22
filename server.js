@@ -191,7 +191,6 @@ const walletRoutes = require('./routes/wallet');
 const tradesRoutes = require('./routes/trades');
 const kycRoutes    = require('./routes/kyc');
 const notifRoutes  = require('./routes/notifications');
-const marketRoutes = require('./routes/market');
 
 // Apply stricter rate limit to auth endpoints
 app.use('/api/auth/login', authLimiter);
@@ -206,7 +205,6 @@ app.use('/api/wallet', walletRoutes);
 app.use('/api/trades', tradesRoutes);
 app.use('/api/kyc',    kycRoutes);
 app.use('/api/notifications', notifRoutes);
-app.use('/api/market', marketRoutes);
 
 // ── 404 Handler ─────────────────────────────────────────────
 app.use('/api/*', (req, res) => {

@@ -16,7 +16,7 @@ const db         = require('../db/database');
 const { authenticate, issueAuthCredentials } = require('../middleware/auth');
 const emailService = require('../services/email');
 const otpService = require('../services/otp');
-const { attachSettingsToUser, mergeSettings } = require('../utils/user-settings');
+const { attachSettingsToUser } = require('../utils/user-settings');
 
 function clientUser(row) {
   const u = attachSettingsToUser(row);
@@ -31,8 +31,6 @@ function clientUser(row) {
     copyTrade: u.copyTrade,
     tradingPaused: u.tradingPaused,
     profitPaused: u.profitPaused,
-    experienceTier: u.experienceTier,
-    settings: u.settings,
   };
 }
 
@@ -199,15 +197,14 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    // Check account status — must be active (admin-created users default to active)
-    if (user.status !== 'active') {
-      const msg = user.status === 'suspended'
-        ? 'Account suspended. Contact support.'
-        : user.status === 'banned'
-          ? 'Account banned.'
-          : `Account is ${user.status}. Contact support to activate.`;
-      console.warn(`[AUTH/LOGIN] Non-active account (${user.status}): ${email}`);
-      return res.status(403).json({ error: msg, code: 'ACCOUNT_DISABLED', status: user.status });
+    // Check account status
+    if (user.status === 'suspended') {
+      console.warn(`[AUTH/LOGIN] Suspended account login attempt: ${email} from IP: ${req.ip}`);
+      return res.status(403).json({ error: 'Account suspended. Contact support.' });
+    }
+    if (user.status === 'banned') {
+      console.warn(`[AUTH/LOGIN] Banned account login attempt: ${email} from IP: ${req.ip}`);
+      return res.status(403).json({ error: 'Account banned.' });
     }
 
     // Verify password with timing-safe comparison
@@ -320,7 +317,6 @@ router.get('/me', authenticate, (req, res) => {
       copyTrade: userWithSettings.copyTrade,
       tradingPaused: userWithSettings.tradingPaused,
       profitPaused: userWithSettings.profitPaused,
-      experienceTier: userWithSettings.experienceTier,
     },
     wallet: wallet ? {
       balance: wallet.balance,
@@ -357,34 +353,6 @@ router.post('/logout-all', authenticate, (req, res) => {
     refreshToken: creds.refreshToken,
     expiresIn: creds.expiresIn,
   });
-});
-
-// ── User settings (experience density, etc.) ────────────────
-router.patch('/settings', authenticate, (req, res) => {
-  try {
-    const user = db.users.findById(req.user.id);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    const merged = mergeSettings(user.settings_json, req.body || {});
-    db.users.updateSettings(req.user.id, merged);
-    const updated = attachSettingsToUser(db.users.findById(req.user.id));
-
-    db.audit.log(req.user.id, 'auth.settings_updated', {
-      experienceTier: updated.experienceTier,
-    }, 'info', req.ip);
-
-    res.json({
-      success: true,
-      settings: updated.settings,
-      experienceTier: updated.experienceTier,
-      copyTrade: updated.copyTrade,
-      tradingPaused: updated.tradingPaused,
-      profitPaused: updated.profitPaused,
-    });
-  } catch (err) {
-    console.error('[AUTH/SETTINGS] error:', err);
-    res.status(500).json({ error: 'Failed to update settings' });
-  }
 });
 
 // ── Change Password ─────────────────────────────────────────
@@ -620,14 +588,8 @@ router.post('/pin-login', async (req, res) => {
 
     const user = db.users.findByEmail(email);
     if (!user) return res.status(401).json({ error: 'Invalid email or PIN' });
-    if (user.status !== 'active') {
-      const msg = user.status === 'suspended'
-        ? 'Account suspended. Contact support.'
-        : user.status === 'banned'
-          ? 'Account banned.'
-          : `Account is ${user.status}. Contact support to activate.`;
-      return res.status(403).json({ error: msg, code: 'ACCOUNT_DISABLED', status: user.status });
-    }
+    if (user.status === 'suspended') return res.status(403).json({ error: 'Account suspended. Contact support.' });
+    if (user.status === 'banned') return res.status(403).json({ error: 'Account banned.' });
     if (!user.pin_hash) return res.status(400).json({ error: 'No PIN set for this account. Use password login.' });
 
     const valid = await bcrypt.compare(pin, user.pin_hash);

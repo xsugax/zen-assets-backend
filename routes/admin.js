@@ -116,8 +116,7 @@ router.post('/users', async (req, res) => {
       return res.status(409).json({ error: 'An account with this email already exists' });
     }
 
-    const cleanPassword = String(password);
-    const passwordHash = await bcrypt.hash(cleanPassword, 12);
+    const passwordHash = await bcrypt.hash(password, 12);
     const userId = db.users.create({
       email: userEmail,
       passwordHash,
@@ -172,12 +171,10 @@ router.post('/users', async (req, res) => {
         tier: userOut.tier,
         status: userOut.status,
         kycStatus: userOut.kyc_status,
-        emailVerified: true,
         createdAt: userOut.created_at,
         copyTrade: userOut.copyTrade,
       },
       wallet,
-      loginHint: 'Sign in on zenassets.tech with this email and password (or Quick PIN). Status must be Active.',
     });
   } catch (err) {
     console.error('Admin create user error:', err);
