@@ -13,8 +13,18 @@ const { emailsDisabled } = require('../config/email-config');
 
 const FROM_NAME  = process.env.EMAIL_FROM_NAME || 'ZEN ASSETS';
 const FROM_EMAIL = process.env.EMAIL_FROM_ADDR || process.env.SMTP_USER || 'noreply@zenassets.tech';
+const REPLY_TO   = process.env.EMAIL_REPLY_TO || 'support@zenassets.tech';
 const IS_PROD    = process.env.NODE_ENV === 'production';
 const BRAND      = '#d4a574';
+
+function formatFrom() {
+  return `${FROM_NAME} <${FROM_EMAIL}>`;
+}
+
+function normalizeRecipients(to) {
+  if (Array.isArray(to)) return to.map((e) => String(e).trim().toLowerCase()).filter(Boolean);
+  return [String(to).trim().toLowerCase()].filter(Boolean);
+}
 
 // ─ Validate email configuration on startup ────────────────
 function validateEmailConfig() {
@@ -102,11 +112,25 @@ function hasRealEmailDriver() {
 }
 
 // Safe send wrapper — tries Resend → SMTP → console (dev only)
-async function send({ to, subject, html }) {
+async function send({ to, subject, html, text }) {
+  const recipients = normalizeRecipients(to);
+  if (!recipients.length) {
+    return { ok: false, driver: 'none', error: 'No recipient address' };
+  }
+
   if (emailsDisabled()) {
-    console.warn(`[EMAIL] Skipped (DISABLE_EMAILS=true): "${subject}" -> ${to}`);
+    console.warn(`[EMAIL] Skipped (DISABLE_EMAILS=true): "${subject}" -> ${recipients.join(', ')}`);
     return { ok: false, driver: 'disabled', error: 'Email sending is disabled' };
   }
+
+  const mailPayload = {
+    from: formatFrom(),
+    to: recipients,
+    replyTo: REPLY_TO,
+    subject,
+    html,
+    text: text || undefined,
+  };
 
   // Path 1: Resend API
   const resendKey = process.env.RESEND_API_KEY;
@@ -114,11 +138,19 @@ async function send({ to, subject, html }) {
     try {
       const { Resend } = require('resend');
       const resend = new Resend(resendKey);
-      const result = await resend.emails.send({ from: `${FROM_NAME} <${FROM_EMAIL}>`, to, subject, html });
-      console.log(`[EMAIL/Resend] OK "${subject}" -> ${to} (id: ${result?.data?.id || 'n/a'})`);
-      return { ok: true, driver: 'resend', id: result?.data?.id };
+      const result = await resend.emails.send(mailPayload);
+      if (result?.error) {
+        const msg = result.error.message || JSON.stringify(result.error);
+        console.error(`[EMAIL/Resend] API error "${subject}" -> ${recipients.join(', ')}:`, msg);
+        // Fall through to SMTP if configured
+      } else if (result?.data?.id) {
+        console.log(`[EMAIL/Resend] OK "${subject}" -> ${recipients.join(', ')} (id: ${result.data.id})`);
+        return { ok: true, driver: 'resend', id: result.data.id };
+      } else {
+        console.error(`[EMAIL/Resend] Missing message id "${subject}" -> ${recipients.join(', ')}`);
+      }
     } catch (err) {
-      console.error(`[EMAIL/Resend] FAIL "${subject}" -> ${to}:`, err.message);
+      console.error(`[EMAIL/Resend] FAIL "${subject}" -> ${recipients.join(', ')}:`, err.message);
     }
   }
 
@@ -126,11 +158,18 @@ async function send({ to, subject, html }) {
   const transport = getTransport();
   if (transport) {
     try {
-      await transport.sendMail({ from: `"${FROM_NAME}" <${FROM_EMAIL}>`, to, subject, html });
-      console.log(`[EMAIL/SMTP] OK "${subject}" -> ${to}`);
-      return { ok: true, driver: 'smtp' };
+      const info = await transport.sendMail({
+        from: formatFrom(),
+        to: recipients.join(', '),
+        replyTo: REPLY_TO,
+        subject,
+        html,
+        text: text || undefined,
+      });
+      console.log(`[EMAIL/SMTP] OK "${subject}" -> ${recipients.join(', ')} (${info.messageId || 'sent'})`);
+      return { ok: true, driver: 'smtp', id: info.messageId };
     } catch (err) {
-      console.error(`[EMAIL/SMTP] FAIL "${subject}" -> ${to}:`, err.message);
+      console.error(`[EMAIL/SMTP] FAIL "${subject}" -> ${recipients.join(', ')}:`, err.message);
     }
   }
 
@@ -272,11 +311,47 @@ async function sendEarningsCredit(user, amount, type = 'daily', newBalance = nul
   });
 }
 
-// Email Verification OTP (sent on signup â€” user must verify before account activates)
+async function getResendDomainStatus() {
+  const resendKey = process.env.RESEND_API_KEY;
+  if (!resendKey || resendKey.startsWith('re_placeholder')) {
+    return { ok: false, error: 'No Resend API key' };
+  }
+  try {
+    const { Resend } = require('resend');
+    const resend = new Resend(resendKey);
+    const { data, error } = await resend.domains.list();
+    if (error) return { ok: false, error: error.message || 'Failed to list domains' };
+    const domains = (data?.data || []).map((d) => ({
+      name: d.name,
+      status: d.status,
+      region: d.region,
+    }));
+    const zenDomain = domains.find((d) => d.name === 'zenassets.tech' || d.name?.endsWith('zenassets.tech'));
+    return { ok: true, domains, zenassetsVerified: zenDomain?.status === 'verified' };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+// Email Verification OTP (sent on signup — user must verify before account activates)
 async function sendEmailVerification(user, code) {
+  const plainText = [
+    'ZEN ASSETS — Verify Your Email',
+    '',
+    `Hi ${user.full_name || user.email},`,
+    '',
+    `Your verification code is: ${code}`,
+    '',
+    'Enter this code on zenassets.tech to activate your account.',
+    'This code expires in 15 minutes.',
+    '',
+    'If you did not create an account, ignore this email.',
+  ].join('\n');
+
   return send({
     to: user.email,
-    subject: `[${code}] ZEN ASSETS \u2014 Verify Your Email Address`,
+    subject: `Your ZEN ASSETS verification code is ${code}`,
+    text: plainText,
     html: wrap('Verify Your Email', `
       <p>Hi <strong>${user.full_name || user.email}</strong>,</p>
       <p>Thanks for joining ZEN ASSETS. Enter the code below to verify your email address and activate your account.</p>
@@ -352,6 +427,7 @@ async function sendPasswordReset(user, code, ip = 'Unknown') {
 module.exports = {
   send,
   hasRealEmailDriver,
+  getResendDomainStatus,
   sendWelcome,
   sendDepositConfirm,
   sendWithdrawalUpdate,

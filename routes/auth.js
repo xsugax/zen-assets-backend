@@ -156,13 +156,14 @@ router.post('/register', async (req, res) => {
 
     if (!emailResult.ok) {
       console.error('[AUTH] Verification email failed for', email, emailResult.error || 'unknown');
-      if (process.env.NODE_ENV === 'production') {
-        return res.status(503).json({
-          error: 'We could not send your verification email. Please try again in a few minutes or contact support@zenassets.tech.',
-          code: 'EMAIL_DELIVERY_FAILED',
-        });
-      }
+      db.audit.log(userId, 'auth.verification_email_failed', { email, error: emailResult.error }, 'error', req.ip);
+      return res.status(503).json({
+        error: 'We could not send your verification email. Please try again in a few minutes or contact support@zenassets.tech.',
+        code: 'EMAIL_DELIVERY_FAILED',
+      });
     }
+
+    db.audit.log(userId, 'auth.verification_email_sent', { email, driver: emailResult.driver, messageId: emailResult.id }, 'info', req.ip);
 
     const response = {
       success: true,

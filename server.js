@@ -162,7 +162,7 @@ app.get('/api/platform/config', (req, res) => {
   }
 });
 
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
   let dbOk = false;
   try {
     db.raw().prepare('SELECT 1 as ok').get();
@@ -177,12 +177,23 @@ app.get('/api/health', (req, res) => {
   const emailEnabled = emailService.hasRealEmailDriver();
   const cronEnabled = process.env.EARNINGS_CRON_ENABLED === 'true';
   const status = dbOk ? 'ok' : 'degraded';
+
+  let domainStatus = null;
+  if (hasResend) {
+    try {
+      domainStatus = await emailService.getResendDomainStatus();
+    } catch (_) {
+      domainStatus = { ok: false, error: 'domain check failed' };
+    }
+  }
+
   res.status(dbOk ? 200 : 503).json({
     status,
     db: dbOk ? 'connected' : 'error',
     email: emailEnabled ? 'configured' : 'disabled',
     emailDriver,
     emailFrom: process.env.EMAIL_FROM_ADDR || process.env.SMTP_USER || 'noreply@zenassets.tech',
+    emailDomainVerified: domainStatus?.zenassetsVerified ?? null,
     earningsCron: cronEnabled ? 'enabled' : 'disabled',
     version: '1.0.0',
     uptime: Math.floor(process.uptime()),

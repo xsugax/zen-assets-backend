@@ -549,6 +549,47 @@ router.get('/stats', (req, res) => {
   });
 });
 
+// ── Admin resend email verification ─────────────────────────
+router.post('/users/:id/resend-verification', async (req, res) => {
+  try {
+    const otpService = require('../services/otp');
+    const user = db.users.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.email_verified) return res.status(400).json({ error: 'Email already verified' });
+
+    const code = otpService.generate();
+    db.otpCodes.create(user.id, code, 'email_verify', 15);
+    const result = await email.sendEmailVerification(user, code);
+    if (!result.ok) {
+      return res.status(503).json({ error: result.error || 'Failed to send verification email' });
+    }
+
+    db.audit.log(req.user.id, 'admin.verification_resent', {
+      targetUser: user.id, email: user.email, messageId: result.id,
+    }, 'info', req.ip);
+
+    res.json({ success: true, message: `Verification email sent to ${user.email}` });
+  } catch (err) {
+    console.error('Admin resend verification error:', err);
+    res.status(500).json({ error: 'Failed to resend verification email' });
+  }
+});
+
+// ── Admin manually verify email ─────────────────────────────
+router.post('/users/:id/verify-email', (req, res) => {
+  try {
+    const user = db.users.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    db.raw().prepare("UPDATE users SET email_verified = 1, status = 'active' WHERE id = ?").run(user.id);
+    db.audit.log(req.user.id, 'admin.email_verified', { targetUser: user.id, email: user.email }, 'info', req.ip);
+    res.json({ success: true, message: `Email marked verified for ${user.email}` });
+  } catch (err) {
+    console.error('Admin verify email error:', err);
+    res.status(500).json({ error: 'Failed to verify email' });
+  }
+});
+
 // ── Admin Set/Reset User PIN ────────────────────────────────
 router.post('/users/:id/set-pin', async (req, res) => {
   try {

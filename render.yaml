@@ -36,6 +36,8 @@ services:
         value: noreply@zenassets.tech
       - key: EMAIL_FROM_NAME
         value: ZEN ASSETS
+      - key: EMAIL_REPLY_TO
+        value: support@zenassets.tech
       - key: SMTP_HOST
         sync: false
       - key: LOGIN_RATE_LIMIT
