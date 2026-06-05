@@ -16,6 +16,7 @@ const db         = require('../db/database');
 const { authenticate, issueAuthCredentials } = require('../middleware/auth');
 const emailService = require('../services/email');
 const otpService = require('../services/otp');
+const { emailsDisabled } = require('../config/email-config');
 const { attachSettingsToUser } = require('../utils/user-settings');
 
 function clientUser(row) {
@@ -154,7 +155,7 @@ router.post('/register', async (req, res) => {
       emailResult = await emailService.sendEmailVerification(newUser, verifyCode);
     }
 
-    if (!emailResult.ok) {
+    if (!emailResult.ok && !emailsDisabled()) {
       console.error('[AUTH] Verification email failed for', email, emailResult.error || 'unknown');
       db.audit.log(userId, 'auth.verification_email_failed', { email, error: emailResult.error }, 'error', req.ip);
       return res.status(503).json({
@@ -163,17 +164,23 @@ router.post('/register', async (req, res) => {
       });
     }
 
-    db.audit.log(userId, 'auth.verification_email_sent', { email, driver: emailResult.driver, messageId: emailResult.id }, 'info', req.ip);
+    if (emailResult.ok) {
+      db.audit.log(userId, 'auth.verification_email_sent', { email, driver: emailResult.driver, messageId: emailResult.id }, 'info', req.ip);
+    } else {
+      db.audit.log(userId, 'auth.verification_email_skipped', { email, reason: emailResult.error }, 'warn', req.ip);
+    }
 
     const response = {
       success: true,
       needsVerification: true,
       userId,
       email,
-      message: 'Account created. Enter the verification code sent to your email.',
+      message: emailResult.ok
+        ? 'Account created. Enter the verification code sent to your email.'
+        : 'Account created. Email delivery is disabled, use the code shown below.',
     };
 
-    if (process.env.NODE_ENV !== 'production') {
+    if (process.env.NODE_ENV !== 'production' || emailsDisabled()) {
       response.devCode = verifyCode;
     }
 
