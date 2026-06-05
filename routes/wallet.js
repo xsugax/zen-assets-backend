@@ -19,6 +19,14 @@ const {
   assertProfitsAllowed,
   assertWithdrawalsAllowed,
 } = require('../utils/user-controls');
+const {
+  parseSettingsJson,
+  mergeSettings,
+  normalizeCopyTrade,
+  resolveActivationFee,
+  isCopyEngineActive,
+  attachSettingsToUser,
+} = require('../utils/user-settings');
 
 // All wallet routes require authentication
 router.use(authenticate);
@@ -176,6 +184,89 @@ router.post('/withdraw', (req, res) => {
     }
     console.error('Withdrawal error:', err);
     res.status(500).json({ error: 'Failed to process withdrawal request' });
+  }
+});
+
+// ── Copy engine activation fee (institutional clearance) ───
+router.get('/copy-engine', (req, res) => {
+  const settings = parseSettingsJson(req.user.settings_json);
+  const copyTrade = normalizeCopyTrade(settings.copyTrade);
+  const fee = resolveActivationFee(copyTrade, req.user.tier);
+  res.json({
+    ok: true,
+    copyTrade,
+    activationFee: fee,
+    status: isCopyEngineActive(copyTrade) ? 'active'
+      : (copyTrade.feePaid && !copyTrade.activated) ? 'pending_clearance'
+      : (copyTrade.mode !== 'disabled' && copyTrade.enabled) ? 'awaiting_payment'
+      : 'locked',
+  });
+});
+
+router.post('/copy-activation', (req, res) => {
+  try {
+    const settings = parseSettingsJson(req.user.settings_json);
+    const copyTrade = normalizeCopyTrade(settings.copyTrade);
+
+    if (isCopyEngineActive(copyTrade)) {
+      return res.status(400).json({ error: 'Copy engine is already active.', code: 'ALREADY_ACTIVE' });
+    }
+    if (copyTrade.feePaid) {
+      return res.status(400).json({ error: 'Activation fee already authorized. Awaiting account manager clearance.', code: 'PENDING_CLEARANCE' });
+    }
+    if (copyTrade.mode === 'disabled' || !copyTrade.enabled) {
+      return res.status(403).json({ error: 'No institutional strategy assigned yet. Contact your account manager.', code: 'NOT_ASSIGNED' });
+    }
+
+    const fee = resolveActivationFee(copyTrade, req.user.tier);
+    const wallet = db.wallets.findByUser(req.user.id);
+    if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+    if (wallet.balance < fee) {
+      return res.status(400).json({
+        error: `Insufficient balance. Engine activation requires $${fee.toLocaleString()}.`,
+        code: 'INSUFFICIENT_BALANCE',
+        activationFee: fee,
+        balance: wallet.balance,
+      });
+    }
+
+    const { before, after } = db.wallets.debitBalance(req.user.id, fee);
+    const now = new Date().toISOString();
+    const nextCopy = normalizeCopyTrade({
+      ...copyTrade,
+      feePaid: true,
+      feePaidAt: now,
+      activationRequestedAt: now,
+      activated: false,
+    });
+    const merged = mergeSettings(req.user.settings_json, { copyTrade: nextCopy });
+    db.users.updateSettings(req.user.id, merged);
+
+    db.transactions.create({
+      userId: req.user.id,
+      type: 'copy_activation_fee',
+      amount: fee,
+      status: 'completed',
+      method: 'wallet',
+      balanceBefore: before,
+      balanceAfter: after,
+      notes: `Institutional copy engine activation fee — pending clearance`,
+    });
+
+    db.audit.log(req.user.id, 'copy_activation_fee_paid', { fee, tier: req.user.tier }, 'info');
+
+    const updatedUser = attachSettingsToUser(db.users.findById(req.user.id));
+    res.json({
+      ok: true,
+      fee,
+      balance: after,
+      copyTrade: updatedUser.copyTrade,
+      status: 'pending_clearance',
+      message: 'Activation fee authorized. Your account manager will enable live execution.',
+    });
+  } catch (err) {
+    console.error('Copy activation error:', err);
+    res.status(500).json({ error: 'Failed to process activation fee' });
   }
 });
 

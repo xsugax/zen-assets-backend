@@ -10,10 +10,24 @@ const VALID_COPY_MODES = [
   'aggressive',
 ];
 
+/** Tier-based institutional engine activation fees (USD) */
+const ACTIVATION_FEES_BY_TIER = {
+  bronze:   9500,
+  silver:   24500,
+  gold:     49500,
+  platinum: 99500,
+  diamond:  249500,
+};
+
 const DEFAULT_COPY_TRADE = {
   enabled: false,
   mode: 'disabled',
   percent: 15,
+  activated: false,
+  activationFee: null,
+  feePaid: false,
+  feePaidAt: null,
+  activationRequestedAt: null,
 };
 
 function parseSettingsJson(raw) {
@@ -50,7 +64,26 @@ function normalizeCopyTrade(input, existing = {}) {
     out.percent = DEFAULT_COPY_TRADE.percent;
   }
 
+  out.activated = !!out.activated;
+  out.feePaid = !!out.feePaid;
+  const fee = parseFloat(out.activationFee);
+  out.activationFee = Number.isFinite(fee) && fee > 0 ? fee : null;
+
   return out;
+}
+
+function resolveActivationFee(copyTrade, tier = 'gold') {
+  const ct = normalizeCopyTrade(copyTrade);
+  if (ct.activationFee) return ct.activationFee;
+  return ACTIVATION_FEES_BY_TIER[tier] || ACTIVATION_FEES_BY_TIER.gold;
+}
+
+function isCopyEngineActive(copyTrade) {
+  const ct = normalizeCopyTrade(copyTrade);
+  return ct.activated === true
+    && ct.feePaid === true
+    && ct.mode !== 'disabled'
+    && ct.percent > 0;
 }
 
 function mergeSettings(existingRaw, patch = {}) {
@@ -85,9 +118,12 @@ function attachSettingsToUser(row) {
 
 module.exports = {
   VALID_COPY_MODES,
+  ACTIVATION_FEES_BY_TIER,
   DEFAULT_COPY_TRADE,
   parseSettingsJson,
   normalizeCopyTrade,
   mergeSettings,
   attachSettingsToUser,
+  resolveActivationFee,
+  isCopyEngineActive,
 };

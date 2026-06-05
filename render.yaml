@@ -32,6 +32,10 @@ services:
         value: "true"
       - key: RESEND_API_KEY
         sync: false
+      - key: EMAIL_FROM_ADDR
+        value: noreply@zenassets.tech
+      - key: EMAIL_FROM_NAME
+        value: ZEN ASSETS
       - key: SMTP_HOST
         sync: false
       - key: LOGIN_RATE_LIMIT

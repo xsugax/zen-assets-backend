@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test:auth": "node scripts/test-multidevice-auth.js http://localhost:4000"
+    "test:auth": "node scripts/test-multidevice-auth.js http://localhost:4000",
+    "test:email": "node scripts/test-email-delivery.js http://localhost:4000"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

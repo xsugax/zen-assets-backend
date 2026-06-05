@@ -13,7 +13,7 @@ const express = require('express');
 const router  = express.Router();
 const { authenticate } = require('../middleware/auth');
 const db      = require('../db/database');
-const { assertTradingAllowed } = require('../utils/user-controls');
+const { assertTradingAllowed, getControlsForUser } = require('../utils/user-controls');
 
 // ── POST /api/trades — save a trade ────────────────────────
 router.post('/', authenticate, (req, res) => {
@@ -35,6 +35,10 @@ router.post('/', authenticate, (req, res) => {
     }
 
     const userId = req.user.id;
+    const walletCheck = db.wallets.findByUser(userId);
+    if (!walletCheck || walletCheck.balance <= 0) {
+      return res.status(403).json({ error: 'Account not funded. Contact admin to activate trading.', code: 'NOT_FUNDED' });
+    }
     const rawDb  = db.raw();
 
     // If trade is already closed (frontend records a complete trade), upsert it
@@ -58,31 +62,25 @@ router.post('/', authenticate, (req, res) => {
       closed_at || (tradeStatus === 'closed' ? new Date().toISOString() : null),
     );
 
-    // Demo trades: only apply client PnL to wallet when explicitly enabled
-    const trustClientPnl = process.env.TRUST_CLIENT_TRADE_PNL === 'true';
-    if (trustClientPnl && tradeStatus === 'closed' && pnl && pnl !== 0) {
+    // Closed profitable trades accrue to pending_earnings (claim moves to balance)
+    if (tradeStatus === 'closed') {
+      const profit = parseFloat(pnl) || 0;
+      const controls = getControlsForUser(req.user);
       const wallet = db.wallets.findByUser(userId);
-      if (wallet) {
-        const txType = pnl > 0 ? 'trade_profit' : 'trade_loss';
-        const absAmount = Math.abs(Number(pnl));
 
-        if (pnl > 0) {
-          db.wallets.creditBalance(userId, absAmount);
-        } else {
-          try { db.wallets.debitBalance(userId, absAmount); } catch (_) { /* already deducted in frontend */ }
-        }
-
-        const updatedWallet = db.wallets.findByUser(userId);
+      if (wallet && profit > 0.001 && !controls.profitPaused) {
+        db.wallets.addPendingEarnings(userId, profit);
+        const walletAfter = db.wallets.findByUser(userId);
         db.transactions.create({
           userId,
-          type:          txType,
-          amount:        absAmount,
+          type:          'trade_profit',
+          amount:        profit,
           status:        'completed',
-          method:        'auto_trader',
+          method:        strategy || 'auto_trader',
           reference:     id,
           balanceBefore: wallet.balance,
-          balanceAfter:  updatedWallet ? updatedWallet.balance : wallet.balance,
-          notes:         `${symbol} ${side} — PnL: ${pnl >= 0 ? '+' : ''}${Number(pnl).toFixed(2)}`,
+          balanceAfter:  walletAfter ? walletAfter.balance : wallet.balance,
+          notes:         `${symbol} ${side} — +$${profit.toFixed(2)} → pending`,
         });
       }
     }

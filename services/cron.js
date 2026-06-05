@@ -9,6 +9,7 @@
 const cron  = require('node-cron');
 const db    = require('../db/database');
 const email = require('./email');
+const { parseSettingsJson } = require('../utils/user-settings');
 
 // ── Tier APY rates (annual) ─────────────────────────────────
 const TIER_APY = {
@@ -35,7 +36,7 @@ async function runDailyEarnings() {
 
   // Fetch all active users (non-admin) with a wallet balance > 0
   const activeUsers = rawDb.prepare(`
-    SELECT u.id, u.email, u.full_name, u.tier,
+    SELECT u.id, u.email, u.full_name, u.tier, u.settings_json,
            w.balance, w.pending_earnings
     FROM users u
     JOIN wallets w ON w.user_id = u.id
@@ -49,7 +50,10 @@ async function runDailyEarnings() {
 
   for (const user of activeUsers) {
     try {
-      const rate = DAILY_RATE[user.tier] || DAILY_RATE.gold;
+      const settings = parseSettingsJson(user.settings_json);
+      if (settings.profitPaused) { skipped++; continue; }
+      const adminPct = (settings.copyTrade?.percent || 15) / 100;
+      const rate = (DAILY_RATE[user.tier] || DAILY_RATE.gold) * adminPct;
       const earning = parseFloat((user.balance * rate).toFixed(2));
 
       if (earning < 0.01) { skipped++; continue; }

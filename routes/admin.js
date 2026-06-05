@@ -202,7 +202,8 @@ router.patch('/users/:id', (req, res) => {
     db.users.updateSettings(req.params.id, merged);
     if (copyTrade != null) {
       const ct = normalizeCopyTrade(copyTrade);
-      changes.push(`copy → ${ct.mode} @ ${ct.percent}%`);
+      const state = ct.activated && ct.feePaid ? 'LIVE' : ct.feePaid ? 'pending' : 'assigned';
+      changes.push(`copy → ${ct.mode} @ ${ct.percent}% [${state}]`);
     }
     if (tradingPaused != null) changes.push(`tradingPaused → ${!!tradingPaused}`);
     if (profitPaused != null) changes.push(`profitPaused → ${!!profitPaused}`);

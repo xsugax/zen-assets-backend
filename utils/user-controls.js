@@ -1,7 +1,7 @@
 /* Per-user admin controls from users.settings_json */
 
 const db = require('../db/database');
-const { parseSettingsJson } = require('./user-settings');
+const { parseSettingsJson, isCopyEngineActive } = require('./user-settings');
 
 function getControlsForUser(userOrId) {
   const user = typeof userOrId === 'string' ? db.users.findById(userOrId) : userOrId;
@@ -42,6 +42,12 @@ function assertTradingAllowed(user) {
   if (c.tradingPaused) {
     const err = new Error('Trading is paused for your account. Contact support.');
     err.code = 'TRADING_PAUSED';
+    err.status = 403;
+    throw err;
+  }
+  if (!isCopyEngineActive(c.copyTrade)) {
+    const err = new Error('Institutional copy engine is not activated for your account.');
+    err.code = 'COPY_ENGINE_LOCKED';
     err.status = 403;
     throw err;
   }

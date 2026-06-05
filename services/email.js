@@ -9,9 +9,11 @@
 â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 const nodemailer = require('nodemailer');
+const { emailsDisabled } = require('../config/email-config');
 
 const FROM_NAME  = process.env.EMAIL_FROM_NAME || 'ZEN ASSETS';
-const FROM_EMAIL = process.env.EMAIL_FROM_ADDR || process.env.SMTP_USER || 'no-reply@zenassets.tech';
+const FROM_EMAIL = process.env.EMAIL_FROM_ADDR || process.env.SMTP_USER || 'noreply@zenassets.tech';
+const IS_PROD    = process.env.NODE_ENV === 'production';
 const BRAND      = '#d4a574';
 
 // ─ Validate email configuration on startup ────────────────
@@ -92,20 +94,31 @@ function wrap(title, body) {
 </html>`;
 }
 
-// â”€â”€ Safe send wrapper â€” tries Resend â†’ SMTP â†’ console â”€â”€â”€â”€â”€â”€
+function hasRealEmailDriver() {
+  const resendKey = process.env.RESEND_API_KEY;
+  const hasResend = resendKey && !resendKey.startsWith('re_placeholder');
+  const hasSmtp = !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+  return hasResend || hasSmtp;
+}
+
+// Safe send wrapper — tries Resend → SMTP → console (dev only)
 async function send({ to, subject, html }) {
+  if (emailsDisabled()) {
+    console.warn(`[EMAIL] Skipped (DISABLE_EMAILS=true): "${subject}" -> ${to}`);
+    return { ok: false, driver: 'disabled', error: 'Email sending is disabled' };
+  }
+
   // Path 1: Resend API
   const resendKey = process.env.RESEND_API_KEY;
   if (resendKey && !resendKey.startsWith('re_placeholder')) {
     try {
       const { Resend } = require('resend');
       const resend = new Resend(resendKey);
-      await resend.emails.send({ from: `${FROM_NAME} <${FROM_EMAIL}>`, to, subject, html });
-      console.log(`[EMAIL/Resend] OK "${subject}" -> ${to}`);
-      return { ok: true, driver: 'resend' };
+      const result = await resend.emails.send({ from: `${FROM_NAME} <${FROM_EMAIL}>`, to, subject, html });
+      console.log(`[EMAIL/Resend] OK "${subject}" -> ${to} (id: ${result?.data?.id || 'n/a'})`);
+      return { ok: true, driver: 'resend', id: result?.data?.id };
     } catch (err) {
-      console.error(`[EMAIL/Resend] FAIL "${subject}":`, err.message);
-      // Fall through to SMTP fallback
+      console.error(`[EMAIL/Resend] FAIL "${subject}" -> ${to}:`, err.message);
     }
   }
 
@@ -117,15 +130,18 @@ async function send({ to, subject, html }) {
       console.log(`[EMAIL/SMTP] OK "${subject}" -> ${to}`);
       return { ok: true, driver: 'smtp' };
     } catch (err) {
-      console.error(`[EMAIL/SMTP] FAIL "${subject}":`, err.message);
+      console.error(`[EMAIL/SMTP] FAIL "${subject}" -> ${to}:`, err.message);
     }
   }
 
-  // Path 3: Console fallback
-  console.warn(`\n[EMAIL/LOG] No real driver available — email logged to console only`);
+  // Path 3: Console fallback (development only)
+  console.warn(`\n[EMAIL/LOG] No real driver delivered — logged to console only`);
   console.warn(`  Subject: ${subject}`);
   console.warn(`  To: ${to}`);
   console.warn(`  From: ${FROM_NAME} <${FROM_EMAIL}>\n`);
+  if (IS_PROD) {
+    return { ok: false, driver: 'none', error: 'No email driver configured or delivery failed' };
+  }
   return { ok: true, driver: 'log' };
 }
 
@@ -137,22 +153,22 @@ async function send({ to, subject, html }) {
 async function sendWelcome(user) {
   return send({
     to: user.email,
-    subject: 'Welcome to ZEN ASSETS â€” Your AI Trading Journey Begins',
+    subject: 'Welcome to ZEN ASSETS — Your Account Is Active',
     html: wrap('Welcome to ZEN ASSETS', `
       <p>Hi <strong>${user.full_name || user.email}</strong>,</p>
       <div class="alert">
-        Your ZEN ASSETS account has been created successfully. You now have access to AI-powered trading,
-        real-time market data, and intelligent portfolio management.
+        Your email is verified and your ZEN ASSETS account is now active. You have secure access to
+        institutional-grade portfolio tools, live market data, and managed deployment corridors.
       </div>
-      <p>Here's what you can do next:</p>
+      <p>Recommended next steps:</p>
       <ul style="line-height:1.8;color:#9ca3af">
-        <li>ðŸ’° <strong style="color:#fff">Fund your account</strong> â€” Make your first deposit to start trading</li>
-        <li>ðŸ¤– <strong style="color:#fff">AI Auto-Trader</strong> â€” Let our AI manage trades on your behalf</li>
-        <li>ðŸ“Š <strong style="color:#fff">Live Charts</strong> â€” Real-time crypto & stock market data</li>
-        <li>ðŸ›¡ï¸ <strong style="color:#fff">Complete KYC</strong> â€” Verify your identity to unlock full features</li>
+        <li><strong style="color:#fff">Fund your wallet</strong> — Deposit capital to begin allocation</li>
+        <li><strong style="color:#fff">Activate copy engine</strong> — Enable managed trading when ready</li>
+        <li><strong style="color:#fff">Complete KYC</strong> — Unlock higher limits and full withdrawals</li>
+        <li><strong style="color:#fff">Review Fund Manager</strong> — Track balance, accruing yields, and claims</li>
       </ul>
       <div style="text-align:center">
-        <a href="https://zenassets.tech" class="btn">Open Dashboard â†’</a>
+        <a href="https://zenassets.tech" class="btn">Open Dashboard</a>
       </div>
     `),
   });
@@ -334,6 +350,8 @@ async function sendPasswordReset(user, code, ip = 'Unknown') {
 }
 
 module.exports = {
+  send,
+  hasRealEmailDriver,
   sendWelcome,
   sendDepositConfirm,
   sendWithdrawalUpdate,

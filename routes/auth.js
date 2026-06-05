@@ -146,24 +146,37 @@ router.post('/register', async (req, res) => {
     db.audit.log(userId, 'user.registered', { email, tier, depositAmount }, 'info', req.ip);
 
     const newUser = db.users.findById(userId);
+    const verifyCode = otpService.generate();
+    db.otpCodes.create(userId, verifyCode, 'email_verify', 15);
+
+    let emailResult = { ok: false };
     if (newUser) {
-      emailService.sendWelcome(newUser).catch(err => console.error('[AUTH] Welcome email failed:', err.message));
+      emailResult = await emailService.sendEmailVerification(newUser, verifyCode);
     }
 
-    // Activate account immediately (no OTP verification)
-    db.raw().prepare("UPDATE users SET status = 'active', email_verified = 1 WHERE id = ?").run(userId);
+    if (!emailResult.ok) {
+      console.error('[AUTH] Verification email failed for', email, emailResult.error || 'unknown');
+      if (process.env.NODE_ENV === 'production') {
+        return res.status(503).json({
+          error: 'We could not send your verification email. Please try again in a few minutes or contact support@zenassets.tech.',
+          code: 'EMAIL_DELIVERY_FAILED',
+        });
+      }
+    }
 
-    const creds = issueAuthCredentials(userId, 'user', req);
-    const wallet = db.wallets.findByUser(userId);
-
-    res.status(201).json({
+    const response = {
       success: true,
-      token: creds.token,
-      refreshToken: creds.refreshToken,
-      expiresIn: creds.expiresIn,
-      user: { id: userId, email, fullName, role: 'user', tier, status: 'active', kycStatus: 'none' },
-      wallet: wallet ? { balance: wallet.balance, initialDeposit: wallet.initial_deposit, totalDeposited: wallet.total_deposited, totalWithdrawn: wallet.total_withdrawn, totalEarned: wallet.total_earned } : null,
-    });
+      needsVerification: true,
+      userId,
+      email,
+      message: 'Account created. Enter the verification code sent to your email.',
+    };
+
+    if (process.env.NODE_ENV !== 'production') {
+      response.devCode = verifyCode;
+    }
+
+    res.status(201).json(response);
   } catch (err) {
     if (err.status === 503) return res.status(503).json({ error: err.message, code: err.code });
     console.error('Register error:', err);
@@ -222,6 +235,15 @@ router.post('/login', async (req, res) => {
       // Add small delay to prevent brute force (100-300ms)
       await new Promise(resolve => setTimeout(resolve, Math.random() * 200 + 100));
       return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    if (!user.email_verified) {
+      return res.status(403).json({
+        error: 'Please verify your email before signing in. Check your inbox for the verification code.',
+        code: 'EMAIL_NOT_VERIFIED',
+        userId: user.id,
+        needsVerification: true,
+      });
     }
 
     const creds = issueAuthCredentials(user.id, user.role, req);
@@ -407,10 +429,8 @@ router.post('/verify-email', async (req, res) => {
     const check = db.otpCodes.verify(userId, String(code).trim(), 'email_verify');
     if (!check.ok) return res.status(400).json({ error: check.error });
 
-    // Activate account
-    db.raw().prepare('UPDATE users SET email_verified = 1 WHERE id = ?').run(userId);
+    db.raw().prepare("UPDATE users SET email_verified = 1, status = 'active' WHERE id = ?").run(userId);
 
-    // Issue JWT and create session
     const user = db.raw().prepare('SELECT * FROM users WHERE id = ?').get(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
@@ -420,12 +440,10 @@ router.post('/verify-email', async (req, res) => {
     const wallet = db.wallets.findByUser(user.id);
     db.audit.log(user.id, 'auth.email_verified', null, 'info', req.ip);
 
-    // TEMP: Email sending disabled for login troubleshooting
-    // emailService.sendWelcome(user).catch(err => console.error('Welcome email failed:', err));
-    const depositAmount = wallet ? wallet.initial_deposit : 0;
-    // if (depositAmount > 0) {
-    //   emailService.sendDepositConfirm(user, depositAmount, 'Initial Deposit').catch(err => console.error('Deposit email failed:', err));
-    // }
+    const welcomeResult = await emailService.sendWelcome(user);
+    if (!welcomeResult.ok) {
+      console.error('[AUTH] Welcome email failed after verify:', user.email, welcomeResult.error || 'unknown');
+    }
 
     res.json({
       success: true,
@@ -495,15 +513,26 @@ router.post('/resend-otp', async (req, res) => {
     const ttl = type === 'email_verify' ? 15 : type === 'password_reset' ? 30 : 10;
     db.otpCodes.create(userId, newCode, type, ttl);
 
-    // TEMP: Email sending disabled for login troubleshooting
-    // if (type === 'email_verify') {
-    //   emailService.sendEmailVerification(user, newCode).catch(err => console.error('Resend email failed:', err));
-    // } else if (type === 'login_otp') {
-    //   emailService.sendLoginOTP(user, newCode, req.ip).catch(err => console.error('Resend login OTP failed:', err));
-    // }
+    let emailResult = { ok: true };
+    if (type === 'email_verify') {
+      emailResult = await emailService.sendEmailVerification(user, newCode);
+    } else if (type === 'login_otp') {
+      emailResult = await emailService.sendLoginOTP(user, newCode, req.ip);
+    } else if (type === 'password_reset') {
+      emailResult = await emailService.sendPasswordReset(user, newCode, req.ip);
+    }
+
+    if (!emailResult.ok) {
+      console.error(`[AUTH] Resend OTP (${type}) failed:`, user.email, emailResult.error || 'unknown');
+      if (process.env.NODE_ENV === 'production') {
+        return res.status(503).json({ error: 'Could not send email. Please try again shortly.' });
+      }
+    }
 
     db.audit.log(userId, `auth.otp_resent.${type}`, null, 'info', req.ip);
-    res.json({ success: true, message: 'A new verification code has been sent to your email.' });
+    const payload = { success: true, message: 'A new verification code has been sent to your email.' };
+    if (process.env.NODE_ENV !== 'production') payload.devCode = newCode;
+    res.json(payload);
   } catch (err) {
     console.error('Resend OTP error:', err);
     res.status(500).json({ error: 'Failed to resend code. Please try again.' });
@@ -525,9 +554,10 @@ router.post('/forgot-password', async (req, res) => {
       }
       const code = otpService.generate();
       db.otpCodes.create(user.id, code, 'password_reset', 30);
-      emailService.sendPasswordReset(user, code, req.ip).catch(err => {
-        console.error('[AUTH] Password reset email failed:', err.message);
-      });
+      const resetResult = await emailService.sendPasswordReset(user, code, req.ip);
+      if (!resetResult.ok) {
+        console.error('[AUTH] Password reset email failed:', user.email, resetResult.error || 'unknown');
+      }
       db.audit.log(user.id, 'auth.password_reset_requested', { ip: req.ip }, 'info', req.ip);
     }
 
@@ -596,6 +626,15 @@ router.post('/pin-login', async (req, res) => {
     if (!valid) {
       db.audit.log(user.id, 'auth.pin_login_failed', { email }, 'warn', req.ip);
       return res.status(401).json({ error: 'Invalid email or PIN' });
+    }
+
+    if (!user.email_verified) {
+      return res.status(403).json({
+        error: 'Please verify your email before signing in.',
+        code: 'EMAIL_NOT_VERIFIED',
+        userId: user.id,
+        needsVerification: true,
+      });
     }
 
     // PIN login skips OTP for convenience

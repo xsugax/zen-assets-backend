@@ -170,13 +170,19 @@ app.get('/api/health', (req, res) => {
   } catch (e) {
     console.error('[HEALTH] DB check failed:', e.message);
   }
-  const emailEnabled = !!(process.env.RESEND_API_KEY || process.env.SMTP_HOST);
+  const emailService = require('./services/email');
+  const hasResend = !!(process.env.RESEND_API_KEY && !process.env.RESEND_API_KEY.startsWith('re_placeholder'));
+  const hasSmtp = !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+  const emailDriver = hasResend ? 'resend' : hasSmtp ? 'smtp' : 'none';
+  const emailEnabled = emailService.hasRealEmailDriver();
   const cronEnabled = process.env.EARNINGS_CRON_ENABLED === 'true';
   const status = dbOk ? 'ok' : 'degraded';
   res.status(dbOk ? 200 : 503).json({
     status,
     db: dbOk ? 'connected' : 'error',
     email: emailEnabled ? 'configured' : 'disabled',
+    emailDriver,
+    emailFrom: process.env.EMAIL_FROM_ADDR || process.env.SMTP_USER || 'noreply@zenassets.tech',
     earningsCron: cronEnabled ? 'enabled' : 'disabled',
     version: '1.0.0',
     uptime: Math.floor(process.uptime()),

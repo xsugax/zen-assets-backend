@@ -26,11 +26,26 @@ async function main() {
     method: 'POST',
     body: { email, password, fullName: 'MD Test', tier: 'gold', pin: '1234', depositAmount: 0 },
   });
-  if (reg.status !== 201 || !reg.data.token) {
+  if (reg.status !== 201 || !reg.data.needsVerification) {
     console.error('FAIL register', reg.status, reg.data);
     process.exit(1);
   }
-  console.log('OK register');
+  console.log('OK register (needs verification)');
+
+  const verifyCode = reg.data.devCode;
+  if (!verifyCode) {
+    console.error('FAIL: devCode missing — run against local/dev server or verify email manually');
+    process.exit(1);
+  }
+  const verify = await req('/auth/verify-email', {
+    method: 'POST',
+    body: { userId: reg.data.userId, code: verifyCode },
+  });
+  if (verify.status !== 200 || !verify.data.token) {
+    console.error('FAIL verify-email', verify.status, verify.data);
+    process.exit(1);
+  }
+  console.log('OK verify-email');
 
   const loginA = await req('/auth/login', {
     method: 'POST',

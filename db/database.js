@@ -255,7 +255,7 @@ function createTables() {
 function prepareStatements() {
   _stmts.userInsert = db.prepare(`
     INSERT INTO users (id, email, password_hash, full_name, role, tier, status, email_verified)
-    VALUES (?, ?, ?, ?, 'user', ?, 'active', 1)
+    VALUES (?, ?, ?, ?, 'user', ?, 'pending', 0)
   `);
   _stmts.userByEmail = db.prepare('SELECT * FROM users WHERE email = ? LIMIT 1');
   _stmts.userById = db.prepare('SELECT * FROM users WHERE id = ? LIMIT 1');
