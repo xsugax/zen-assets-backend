@@ -6,7 +6,7 @@
    Set DISABLE_EMAILS=true to disable all email sending.
 ════════════════════════════════════════════════════════════ */
 
-const DISABLE_EMAILS = process.env.DISABLE_EMAILS === 'true';
+const DISABLE_EMAILS = process.env.DISABLE_EMAILS === 'true' || true; // TEMP: Disabled for login troubleshooting
 
 /**
  * Check if email should be sent

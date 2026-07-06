@@ -119,8 +119,8 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ error: `Invalid tier. Choose: ${VALID_TIERS.join(', ')}` });
     }
 
-    // Create user
-    const userId = db.users.create({ email, passwordHash, fullName, tier: tierNorm });
+    // Create user with email pre-verified (no email verification step)
+    const userId = db.users.create({ email, passwordHash, fullName, tier: tierNorm, email_verified: 1 });
 
     // Set PIN (hashed)
     const pinHash = await bcrypt.hash(pin, 10);
@@ -146,45 +146,23 @@ router.post('/register', async (req, res) => {
     // Audit
     db.audit.log(userId, 'user.registered', { email, tier, depositAmount }, 'info', req.ip);
 
-    const newUser = db.users.findById(userId);
-    const verifyCode = otpService.generate();
-    db.otpCodes.create(userId, verifyCode, 'email_verify', 15);
+    // Get user and issue token immediately
+    const user = db.users.findById(userId);
+    const creds = issueAuthCredentials(userId, 'user', req);
+    const wallet = db.wallets.getByUserId(userId);
+    
+    // Create session for multi-device tracking
+    db.sessions.create(userId, creds.token, req.ip, req.get('User-Agent'), 30);
+    db.audit.log(userId, 'auth.login', { method: 'register' }, 'info', req.ip);
 
-    let emailResult = { ok: false };
-    if (newUser) {
-      emailResult = await emailService.sendEmailVerification(newUser, verifyCode);
-    }
-
-    if (!emailResult.ok && !emailsDisabled()) {
-      console.error('[AUTH] Verification email failed for', email, emailResult.error || 'unknown');
-      db.audit.log(userId, 'auth.verification_email_failed', { email, error: emailResult.error }, 'error', req.ip);
-      return res.status(503).json({
-        error: 'We could not send your verification email. Please try again in a few minutes or contact support@zenassets.tech.',
-        code: 'EMAIL_DELIVERY_FAILED',
-      });
-    }
-
-    if (emailResult.ok) {
-      db.audit.log(userId, 'auth.verification_email_sent', { email, driver: emailResult.driver, messageId: emailResult.id }, 'info', req.ip);
-    } else {
-      db.audit.log(userId, 'auth.verification_email_skipped', { email, reason: emailResult.error }, 'warn', req.ip);
-    }
-
-    const response = {
+    res.status(201).json({
       success: true,
-      needsVerification: true,
-      userId,
-      email,
-      message: emailResult.ok
-        ? 'Account created. Enter the verification code sent to your email.'
-        : 'Account created. Email delivery is disabled, use the code shown below.',
-    };
-
-    if (process.env.NODE_ENV !== 'production' || emailsDisabled()) {
-      response.devCode = verifyCode;
-    }
-
-    res.status(201).json(response);
+      token: creds.token,
+      refreshToken: creds.refreshToken,
+      expiresIn: creds.expiresIn,
+      user: clientUser(user),
+      wallet: wallet ? { balance: wallet.balance, initialDeposit: wallet.initial_deposit, totalDeposited: wallet.total_deposited, totalWithdrawn: wallet.total_withdrawn, totalEarned: wallet.total_earned } : null,
+    });
   } catch (err) {
     if (err.status === 503) return res.status(503).json({ error: err.message, code: err.code });
     console.error('Register error:', err);
@@ -245,20 +223,17 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    if (!user.email_verified) {
-      return res.status(403).json({
-        error: 'Please verify your email before signing in. Check your inbox for the verification code.',
-        code: 'EMAIL_NOT_VERIFIED',
-        userId: user.id,
-        needsVerification: true,
-      });
-    }
+    // Skip email verification check (pre-verified on registration)
+    // Password already validated above
 
     const creds = issueAuthCredentials(user.id, user.role, req);
     db.users.updateLogin(user.id);
 
     const wallet = db.wallets.findByUser(user.id);
     db.audit.log(user.id, 'auth.login', { ip: req.ip }, 'info', req.ip);
+    
+    // Create session for multi-device tracking
+    db.sessions.create(user.id, creds.token, req.ip, req.get('User-Agent'), 30);
 
     console.log(`[AUTH/LOGIN] ✓ Success: ${email} from IP: ${req.ip}`);
 
