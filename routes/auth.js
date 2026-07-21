@@ -1,4 +1,4 @@
-/* ════════════════════════════════════════════════════════════
+ /* ════════════════════════════════════════════════════════════
    routes/auth.js — Authentication Routes
    ZEN ASSETS Backend
 
@@ -149,10 +149,8 @@ router.post('/register', async (req, res) => {
     // Get user and issue token immediately
     const user = db.users.findById(userId);
     const creds = issueAuthCredentials(userId, 'user', req);
-    const wallet = db.wallets.getByUserId(userId);
+    const wallet = db.wallets.findByUser(userId);
     
-    // Create session for multi-device tracking
-    db.sessions.create(userId, creds.token, req.ip, req.get('User-Agent'), 30);
     db.audit.log(userId, 'auth.login', { method: 'register' }, 'info', req.ip);
 
     res.status(201).json({
@@ -232,8 +230,6 @@ router.post('/login', async (req, res) => {
     const wallet = db.wallets.findByUser(user.id);
     db.audit.log(user.id, 'auth.login', { ip: req.ip }, 'info', req.ip);
     
-    // Create session for multi-device tracking
-    db.sessions.create(user.id, creds.token, req.ip, req.get('User-Agent'), 30);
 
     console.log(`[AUTH/LOGIN] ✓ Success: ${email} from IP: ${req.ip}`);
 
