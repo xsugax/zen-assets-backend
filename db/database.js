@@ -1,7 +1,24 @@
 /* ════════════════════════════════════════════════════════════
    db/database.js — ZEN ASSETS Database Module
-   SQLite + Better-SQLite3 — high-level facade API for routes
+   Dual-Mode: SQLite (local dev) or PostgreSQL (production)
+   
+   Auto-detects PostgreSQL when DATABASE_URL env var is set.
+   Falls back to SQLite (Better-SQLite3) otherwise.
+   
+   Exposes identical sync API for routes — PG module wraps
+   async behind synchronous call patterns for compatibility.
 ════════════════════════════════════════════════════════════ */
+
+// ── Detect PostgreSQL — delegate to postgres.js ──────────
+if (process.env.DATABASE_URL) {
+  const pg = require('./postgres');
+  // Re-export the PG module's entire API surface
+  module.exports = pg;
+  console.log('[DB] Using PostgreSQL (DATABASE_URL detected)');
+  return;
+  // NOTE: Return prevents the rest of this file from executing.
+  // The PG module is a drop-in replacement matching the same API.
+}
 
 const Database = require('better-sqlite3');
 const bcrypt   = require('bcryptjs');
